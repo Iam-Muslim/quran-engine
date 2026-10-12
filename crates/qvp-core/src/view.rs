@@ -28,11 +28,13 @@ impl Default for View {
 impl View {
     /// Zoom by `factor` about `(fx, fy)` in viewport pixels, with the scale held between
     /// `min` and `max`: the point under the fingers stays under them. `min`/`max` of 0 take
-    /// the engine's own limits.
+    /// the engine's own limits. A `max` under `min` is `min`: the floor is the settled page,
+    /// which a pinch never shrinks inside the screen, and a ceiling set under it asks for no
+    /// zoom at all rather than for a smaller page.
     pub fn zoom_about(self, fx: f32, fy: f32, factor: f32, min: f32, max: f32) -> View {
         let (min, max) =
             (if min > 0.0 { min } else { defaults::MIN_ZOOM }, if max > 0.0 { max } else { defaults::MAX_ZOOM });
-        let scale = (self.scale * factor).clamp(min.min(max), max.max(min));
+        let scale = (self.scale * factor).clamp(min, max.max(min));
         // the ratio actually applied, which is not `factor` once the clamp bites
         let k = if self.scale > 0.0 { scale / self.scale } else { 1.0 };
         View { scale, offset_x: fx - (fx - self.offset_x) * k, offset_y: fy - (fy - self.offset_y) * k }
@@ -262,9 +264,6 @@ impl Page {
         out
     }
 
-    /// The ayah medallions of the page in viewport pixels, through the current layout: where
-    /// each one is drawn, for a tap target or a marker a host draws itself. The page-unit twin
-    /// is [`Page::ayah_marks`].
     /// The surah headings in viewport px through the current layout: where each is drawn.
     ///
     /// Without a layout this returns the page-unit boxes. The layout moves a heading's line,
@@ -300,6 +299,9 @@ impl Page {
             .collect()
     }
 
+    /// The ayah medallions of the page in viewport pixels, through the current layout: where
+    /// each one is drawn, for a tap target or a marker a host draws itself. The page-unit twin
+    /// is [`Page::ayah_marks`].
     pub fn ayah_marks_view(&self) -> Vec<MarkerInfo> {
         let Some(l) = self.current_layout() else { return self.ayah_marks() };
         let n_words = self.data().words.len() as u32;

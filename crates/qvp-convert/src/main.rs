@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  qvp-convert svg2qvp <in.svg> <out.qvp> [out.words.json] [words-index.json]\n  qvp-convert qvp2svg <in.qvp> <out.svg>\n  qvp-convert info <in.qvp>\n  qvp-convert batch <svg_dir> <out_dir> [words_index_dir]\n  qvp-convert zoom-levels <pages_dir> <out.rs> [--check]\n\nThe words index is the quran-svg bundle's index/by-page; batch finds it next to\n<svg_dir> when the argument is left out."
+        "usage:\n  qvp-convert svg2qvp <in.svg> <out.qvp> [out.words.json] [words-index.json]\n  qvp-convert qvp2svg <in.qvp> <out.svg> [ornaments.qvo ayah_mark,surah_header,page_frame]\n  qvp-convert info <in.qvp>\n  qvp-convert batch <svg_dir> <out_dir> [words_index_dir]\n  qvp-convert zoom-levels <pages_dir> <out.rs> [--check]\n  qvp-convert ornaments <assets_dir> <out.qvo> [--redistributable] [--style NAME]...\n  qvp-convert ornaments-info <set.qvo>\n\nThe words index is the quran-svg bundle's index/by-page; batch finds it next to\n<svg_dir> when the argument is left out.\n\n<assets_dir> is a quran-assets checkout: catalog.json with the assets/ tree beside it.\n--redistributable keeps only assets whose licence is confirmed.\nornaments-info lists a set and ends with `redistributable: <n> of <total>`."
     );
     std::process::exit(2)
 }
@@ -74,10 +74,33 @@ fn main() {
             }
         }
         "qvp2svg" => {
-            expect_args(&args, 2, 2);
+            expect_args(&args, 2, 4);
             let bytes = fs::read(&args[2]).expect("read qvp");
-            let page = qvp_format::decode(&bytes).expect("decode");
-            fs::write(&args[3], to_svg(&page).expect("to_svg")).expect("write svg");
+            if args.len() == 6 {
+                // three ornament indices (ayah mark, surah header, page frame), `-` for none
+                let set = qvp_format::ornaments::OrnamentSet::decode(&fs::read(&args[4]).expect("read ornaments"))
+                    .expect("decode ornaments");
+                let idx: Vec<u32> = args[5]
+                    .split(',')
+                    .map(|v| if v == "-" { u32::MAX } else { v.parse().expect("an ornament index or -") })
+                    .collect();
+                if idx.len() != 3 {
+                    usage();
+                }
+                let mut page = qvp_core::Page::load(&bytes).expect("decode");
+                let spec = qvp_core::DressSpec {
+                    ayah_mark: idx[0],
+                    surah_header: idx[1],
+                    page_frame: idx[2],
+                    ..Default::default()
+                };
+                let dress = page.dress(&std::sync::Arc::new(set), &spec).expect("the engine refused the spec").clone();
+                fs::write(&args[3], ornaments::dress_svg(&mut page, &dress)).expect("write svg");
+            } else {
+                expect_args(&args, 2, 2);
+                let page = qvp_format::decode(&bytes).expect("decode");
+                fs::write(&args[3], to_svg(&page).expect("to_svg")).expect("write svg");
+            }
         }
         // the engine's shipped zoom steps: search every page, chain the pages together, write
         // the table the engine carries. `--check` rebuilds it and reports whether the committed
@@ -218,6 +241,65 @@ fn main() {
             if errs != 0 {
                 std::process::exit(1);
             }
+        }
+        "ornaments" => {
+            if args.len() < 4 {
+                usage();
+            }
+            let dir = PathBuf::from(&args[2]);
+            let out = PathBuf::from(&args[3]);
+            let mut opts = qvp_convert::ornaments::BuildOptions::default();
+            let mut rest = args[4..].iter();
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--redistributable" => opts.redistributable_only = true,
+                    "--style" => match rest.next() {
+                        Some(s) => opts.styles.push(s.clone()),
+                        None => usage(),
+                    },
+                    _ => usage(),
+                }
+            }
+            match qvp_convert::ornaments::build(&dir, &opts) {
+                Ok((set, report)) => {
+                    for w in &report.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    let bytes = set.encode();
+                    fs::write(&out, &bytes).unwrap_or_else(|e| {
+                        eprintln!("error: {}: {e}", out.display());
+                        std::process::exit(1)
+                    });
+                    print!("{}", qvp_convert::ornaments::describe(&set));
+                    println!(
+                        "{} ornaments, {} outlines, {} bytes -> {}",
+                        set.ornaments.len(),
+                        set.paths.len(),
+                        bytes.len(),
+                        out.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "ornaments-info" => {
+            if args.len() != 3 {
+                usage();
+            }
+            let bytes = fs::read(&args[2]).unwrap_or_else(|e| {
+                eprintln!("error: {}: {e}", args[2]);
+                std::process::exit(1)
+            });
+            let set = qvp_format::ornaments::OrnamentSet::decode(&bytes).unwrap_or_else(|e| {
+                eprintln!("error: {}: {e:?}", args[2]);
+                std::process::exit(1)
+            });
+            print!("{}", qvp_convert::ornaments::describe(&set));
+            let n = set.ornaments.iter().filter(|o| o.license.redistributable).count();
+            println!("redistributable: {n} of {}", set.ornaments.len());
         }
         _ => usage(),
     }

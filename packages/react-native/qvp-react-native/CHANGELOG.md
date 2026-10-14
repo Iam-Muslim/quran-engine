@@ -8,6 +8,15 @@ This package shares the engine version. Entries are copied from the root `CHANGE
 - `<QvpPassageView />`: a range of complete ayahs, or a surah's basmalah, laid out by the engine on
   rows of the view's width and drawn natively. The layout comes back through `onPassageLayout`,
   and the view takes its height from it. Closes the React Native rows of issue #102.
+- Dress: `QvpOrnaments.load(uri)` reads an ornament set (`ornaments.qvo`), and the `dress` prop
+  puts its medallions, bands and borders on the page. The hosted `QvpPageView` paints them behind
+  the ink and fits the border in. `Qvp.dress`, `undress`, `dressInfo` and `dressRevision` do the
+  same by react tag, and `onDressChanged` reports the engine's readout. Closes issue #116.
+- `Qvp.dressClamp(tag, view, viewportW, viewportH)` clamps a view over the content plus the dress
+  overflow, as the engine does (`qvp_dress_clamp`).
+- `Qvp.dressView(tag, scale, viewportW)` returns `{view, width, height}` for a host that scrolls
+  the page: the dressed box's top at 0, centred, and its size (`qvp_dress_view`).
+- `QvpRnPageView.kt` imports `android.util.Base64`, so the module compiles again.
 
 ## [0.5.0] - 2026-10-08
 

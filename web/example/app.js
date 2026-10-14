@@ -9,6 +9,7 @@
   const pad = n => String(n).padStart(3, '0');
   const src = {
     wasm: async () => EMB ? b64(EMB.wasm) : new Uint8Array(await (await fetch('qvp_ffi.wasm')).arrayBuffer()),
+    ornaments: async () => { if (EMB) return EMB.ornaments ? b64(EMB.ornaments) : null; try { const r = await fetch('pages/ornaments.qvo'); return r.ok ? new Uint8Array(await r.arrayBuffer()) : null; } catch { return null; } },
     atlas: async () => { if (EMB) return EMB.atlas ? b64(EMB.atlas) : null; try { const r = await fetch('pages/atlas.qva'); return r.ok ? new Uint8Array(await r.arrayBuffer()) : null; } catch { return null; } },
     pages: EMB ? Object.keys(EMB.pages).map(Number).sort((a, b) => a - b) : Array.from({ length: 604 }, (_, i) => i + 1),
     page: async n => EMB ? b64(EMB.pages[pad(n)]) : new Uint8Array(await (await fetch(`pages/${pad(n)}.qvp`)).arrayBuffer()),
@@ -20,6 +21,8 @@
   const wasmMs = performance.now() - t0;
   let atlas = null;
   try { const ab = await src.atlas(); if (ab) atlas = engine.loadAtlas(ab); } catch (e) { console.warn('no atlas', e); }
+  let ornaments = null;
+  try { const ob = await src.ornaments(); if (ob) ornaments = engine.loadOrnaments(ob); } catch (e) { console.warn('no ornaments', e); }
 
   const canvas = $('cv'), stage = $('stage'), paper = $('paper');
   const renderer = new CanvasRenderer(canvas);
@@ -33,6 +36,7 @@
     selWord: -1, selAyah: null, hlSel: 0, hlAyah: 0, hlSearch: 0, hlPlay: 0, pathHandles: new Map(),
     hover: -1, theme: 'light', themeHandle: 0, tajwidHandle: 0, hideHandle: 0, ayahMarksHandle: 0,
     playing: false, playIdx: 0, lastHitUs: 0, animating: false,
+    dress: { ayahMark: null, surahHeader: null, pageFrame: null, gap: 5, bandGap: 5, ayahMarkScale: 0, pageFrameScale: 1, lineArt: [], colors: [] },
     layout: { lineSpacing: 1, fillHeight: false, padTop: 24, padBottom: 24, padSide: 16, surahFrames: true },
     reflow: { on: false, zoom: 1.6, fill: 'centred', breaks: 'fitted', gaps: 'uniform', wordGap: 1, relax: 0.5, maxStretch: 2 },
     hlMode: 'both', hlMs: 250, revealOn: false, level: 1, levels: null,
@@ -93,8 +97,8 @@
   }
   function fit(redraw = true) {
     const L = relayout(); if (!L) return;
-    // a reflowed page is taller than the screen on purpose: show its top and let the reader scroll
-    S.view = L.reflowed ? { scale: 1, offsetX: L.fitX, offsetY: 0 } : { scale: L.fitScale, offsetX: L.fitX, offsetY: L.fitY };
+    // the engine's fit: on a dressed page it already holds the border
+    S.view = { scale: L.fitScale, offsetX: L.fitX, offsetY: L.fitY };
     renderer.baseKey = '';
     if (redraw) draw();
   }
@@ -131,6 +135,7 @@
     applyTheme(); applyToggles();
     carryZoom();
     renderer.baseKey = '';
+    applyDress(false);
     fit(false);
     showSelection(); showMeta(); runSearch();
     draw();
@@ -278,7 +283,7 @@
         const L = S.page.currentLayout;
         const turns = S.page.sidewaysDrag(S.zoom, S.view, L ? L.fitScale : 0) === 'turnPage';
         const v = engine.viewPan({ ...S.view, offsetX: drag.offsetX, offsetY: drag.offsetY }, turns ? 0 : dx, dy);
-        S.view = turns && L ? engine.viewClamp(v, L.contentW, L.contentH, stage.clientWidth, stage.clientHeight) : v;
+        S.view = turns && L ? S.page.dressClamp(v, stage.clientWidth, stage.clientHeight) : v;
         draw();
       }
       return;
@@ -380,7 +385,10 @@
     renderer.baseKey = ''; draw();
   }
   $('ink').oninput = applyTheme;
-  $('theme').onchange = e => { S.theme = e.target.value; $('ink').value = INK[S.theme]; applyTheme(); };
+  $('theme').onchange = e => { S.theme = e.target.value; $('ink').value = INK[S.theme]; applyTheme(); themeToggleLabel(); };
+  // one click between dark and light; the select keeps sepia
+  function themeToggleLabel() { $('themeToggle').textContent = S.theme === 'dark' ? 'light' : 'dark'; }
+  $('themeToggle').onclick = () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; $('theme').value = S.theme; $('ink').value = INK[S.theme]; applyTheme(); themeToggleLabel(); };
   $('legend').innerHTML = Object.entries(PALETTE).slice(0, 5).map(([c, col]) => `<span class="hint"><i class="sw" style="background:${col}"></i>${engine.categoryName(+c)}</span>`).join('');
 
   // ── memorisation ──
@@ -482,9 +490,105 @@
       `zoom          ${(S.view.scale * (L ? L.scale : 1) * dpr).toFixed(2)}× device px per unit`;
   }
 
+  // ── dress: another mushaf's ornaments. The engine places everything; this panel only
+  // says which ornaments, and the readout is the engine's. ──
+  function applyDress(redraw = true) {
+    const p = S.page; if (!p) return;
+    const d = S.dress;
+    const none = d.ayahMark === null && d.surahHeader === null && d.pageFrame === null;
+    if (!ornaments || none) {
+      p.undress();
+      $('dressInfo').textContent = ornaments ? 'as printed' : 'no ornament set (put ornaments.qvo beside the pages)';
+    } else {
+      const info = p.dress(ornaments, d);
+      const chosen = [d.ayahMark, d.surahHeader, d.pageFrame].filter(i => i !== null).map(i => ornaments.list[i]);
+      $('dressInfo').textContent = info
+        ? `${info.ayahMarks} medallions · ${info.surahHeaders} band(s) · ` +
+          (info.pageFrame === null ? 'no border' : info.frameStretched ? 'the whole frame is stretched (no slices)' : `${info.frameRepeats} border repeats tiled to this page`) +
+          `\nviewBox ${info.viewBox.map(v => v.toFixed(1)).join(' ')}` +
+          chosen.map(o => `\n${o.style} ${o.kind}: ${o.licence.id || 'licence unstated'}, ${o.licence.status}, redistributable: ${o.licence.redistributable}`).join('')
+        : 'the engine refused that dress';
+    }
+    renderer.baseKey = '';   // the dress hid or restored printed ink
+    fit(redraw);
+  }
+  function dressSwatches() {
+    const host = $('dressParts');
+    host.innerHTML = '';
+    if (!ornaments) return;
+    for (const i of [S.dress.ayahMark, S.dress.surahHeader, S.dress.pageFrame]) {
+      if (i === null) continue;
+      const o = ornaments.list[i];
+      // a kind drawn as line art has one ink, so it gets one swatch
+      const parts = S.dress.lineArt.includes(o.kind) ? o.parts.filter(x => x && x.name === 'line') : o.parts.filter(x => x && (x.color & 255) !== 0);
+      for (const part of parts) {
+        const wrap = document.createElement('label');
+        wrap.className = 'hint';
+        const set = S.dress.colors.find(c => c[0] === i && c[1] === part.index);
+        const own = '#' + (part.color >>> 8).toString(16).padStart(6, '0');
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = set ? set[2] : own;
+        wrap.append(input, ` ${o.kind.replace('_', ' ')} ${part.name}`);
+        input.onchange = e => { S.dress.colors = S.dress.colors.filter(c => !(c[0] === i && c[1] === part.index)); S.dress.colors.push([i, part.index, e.target.value]); applyDress(); };
+        host.append(wrap);
+      }
+    }
+  }
+  // an <option> built from data, which is text and never markup
+  function option(value, text) {
+    const el = document.createElement('option');
+    el.value = value;
+    el.textContent = text;
+    return el;
+  }
+  const KIND_PICKERS = [['dressMark', 'ayah_mark', 'ayahMark'], ['dressHeader', 'surah_header', 'surahHeader'], ['dressFrame', 'page_frame', 'pageFrame']];
+  // the mushaf picker shows the style the three kinds agree on, or "mixed"
+  function showDressStyle() {
+    const sel = $('dressStyle');
+    const chosen = KIND_PICKERS.map(([, , key]) => S.dress[key] === null ? null : ornaments.list[S.dress[key]].style);
+    const same = chosen.every(s => s === chosen[0]);
+    if (same) { sel.value = chosen[0] || ''; sel.querySelector('[value="mixed"]')?.remove(); }
+    else { if (!sel.querySelector('[value="mixed"]')) sel.append(option('mixed', 'mixed')); sel.value = 'mixed'; }
+  }
+  // the medallion slider shows the design's own size until the reader moves it
+  function showMarkScale() {
+    if (S.dress.ayahMarkScale > 0) return;
+    const o = S.dress.ayahMark === null ? null : ornaments.list[S.dress.ayahMark];
+    const own = o && o.lineage === 'scan' ? QVP.DEFAULTS.AYAH_MARK_SCALE_SCAN : 1;
+    $('dressMarkScale').value = own; $('dressMarkScaleVal').textContent = '×' + own.toFixed(2) + ' (design)';
+  }
+  function fillDressPickers() {
+    if (!ornaments) { for (const id of ['dressStyle', 'dressMark', 'dressHeader', 'dressFrame']) $(id).disabled = true; return; }
+    // presets: every mushaf that has all three kinds
+    const sel = $('dressStyle');
+    for (const s of ornaments.styles().filter(s => s.ayahMark && s.surahHeader && s.pageFrame)) sel.append(option(s.style, s.style + (s.riwayah ? ', ' + s.riwayah : '')));
+    sel.onchange = e => {
+      const style = e.target.value;
+      if (style === 'mixed') return;
+      const s = style ? ornaments.styles().find(x => x.style === style) : null;
+      for (const [id, , key] of KIND_PICKERS) { const o = s ? s[key] : null; S.dress[key] = o ? o.index : null; $(id).value = o ? String(o.index) : ''; }
+      S.dress.colors = []; S.dress.ayahMarkScale = 0; showDressStyle(); showMarkScale(); dressSwatches(); applyDress();
+    };
+    for (const [id, kind, key] of KIND_PICKERS) {
+      const kindSel = $(id);
+      for (const o of ornaments.ofKind(kind)) kindSel.append(option(String(o.index), o.style + (o.riwayah ? ', ' + o.riwayah : '')));
+      kindSel.onchange = e => { S.dress[key] = e.target.value === '' ? null : +e.target.value; S.dress.colors = []; if (key === 'ayahMark') { S.dress.ayahMarkScale = 0; showMarkScale(); } showDressStyle(); dressSwatches(); applyDress(); };
+    }
+  }
+  fillDressPickers();
+  $('undress').onclick = () => { S.dress = { ...S.dress, ayahMark: null, surahHeader: null, pageFrame: null, colors: [] }; for (const id of ['dressStyle', 'dressMark', 'dressHeader', 'dressFrame']) $(id).value = ''; if (ornaments) showDressStyle(); dressSwatches(); applyDress(); };
+  $('dressGap').oninput = e => { S.dress.gap = +e.target.value; $('dressGapVal').textContent = e.target.value; applyDress(); };
+  $('dressBandGap').oninput = e => { S.dress.bandGap = +e.target.value; $('dressBandGapVal').textContent = e.target.value; applyDress(); };
+  $('dressMarkScale').oninput = e => { S.dress.ayahMarkScale = +e.target.value; $('dressMarkScaleVal').textContent = '×' + (+e.target.value).toFixed(2); applyDress(); };
+  $('dressFrameScale').oninput = e => { S.dress.pageFrameScale = +e.target.value; $('dressFrameScaleVal').textContent = '×' + (+e.target.value).toFixed(2); applyDress(); };
+  for (const [id, kind] of [['dressLineMark', 'ayah_mark'], ['dressLineHeader', 'surah_header'], ['dressLineFrame', 'page_frame']]) {
+    $(id).onchange = e => { S.dress.lineArt = S.dress.lineArt.filter(k => k !== kind); if (e.target.checked) S.dress.lineArt.push(kind); S.dress.colors = []; dressSwatches(); applyDress(); };
+  }
   window.__qvp = { S, engine, atlas, renderer, loadPage, fit, selectWord, selectAyah, draw };
   const prefersDark = document.documentElement.dataset.theme === 'dark' || (document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
   if (prefersDark) { S.theme = 'dark'; $('theme').value = 'dark'; $('ink').value = INK.dark; }
+  themeToggleLabel();
   window.addEventListener('resize', resize);
   await loadPage(src.pages[0]);
   resize();

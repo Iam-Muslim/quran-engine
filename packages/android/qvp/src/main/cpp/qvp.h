@@ -45,8 +45,10 @@ extern "C" {
 #define QVP_DEFAULT_REVEAL_LIT     1u
 #define QVP_DEFAULT_REVEAL_GREY    0xc9c4b8ffu
 #define QVP_DEFAULT_CROP_PAD       2.0f
+#define QVP_DEFAULT_AYAH_MARK_SCALE_SCAN 1.5f   /* a dressed scanned medallion's size when ayah_mark_scale is 0 */
 typedef struct QvpPage QvpPage;
 typedef struct QvpAtlas QvpAtlas;
+typedef struct QvpOrnaments QvpOrnaments;
 typedef struct QvpPassage QvpPassage;
 typedef struct { const uint8_t* ptr; uint32_t len; } QvpStr;
 
@@ -68,6 +70,14 @@ enum { QVP_BAND_LINE_SPACING = 0, QVP_BAND_INK };
 enum { QVP_MASK_HIDE = 0, QVP_MASK_BLOCK, QVP_MASK_BLUR };
 enum { QVP_LAYER_BASE = 0, QVP_LAYER_THEME = 10, QVP_LAYER_HIGHLIGHT = 50, QVP_LAYER_SELECTION = 60, QVP_LAYER_TOP = 100 };
 enum { QVP_DIVISION_JUZ = 0, QVP_DIVISION_HIZB, QVP_DIVISION_NISF, QVP_DIVISION_RUBU_AL_HIZB };
+/* what an ornament replaces (QvpOrnament.kind; low byte of a dress draw's `flags`) */
+enum { QVP_ORNAMENT_AYAH_MARK = 0, QVP_ORNAMENT_SURAH_HEADER, QVP_ORNAMENT_PAGE_FRAME };
+/* where an ornament's artwork came from (QvpOrnament.lineage) */
+enum { QVP_LINEAGE_SCAN = 0, QVP_LINEAGE_FONT };
+/* a dress draw's `flags`: the kind in the low byte, these above it */
+enum { QVP_DRAW_EVENODD = 1 << 8, QVP_DRAW_STROKE = 2 << 8 };
+/* QvpDressSpec.line_art: which kinds are drawn as line art, their constant-width strokes alone */
+enum { QVP_LINE_ART_AYAH_MARK = 1, QVP_LINE_ART_SURAH_HEADER = 2, QVP_LINE_ART_PAGE_FRAME = 4, QVP_LINE_ART_ALL = 7 };
 /* mark ids: qvp_mark_name / qvp_mark_from_name. The names are the quran-svg
    `mark-taxonomy` v2 vocabulary (the bundle's schema/mark-taxonomy.json):
    0 none, 1 fathah, 2 kasrah, 3 dammah, 4 tanwin_al_fath, 5 tanwin_al_kasr, 6 tanwin_al_damm,
@@ -110,7 +120,9 @@ typedef struct { float viewport_w, viewport_h, pad_top, pad_bottom, pad_left, pa
 /* the grid a page is designed on: the mushaf's line count (15 here, or more when a page has more) and the printed spacing */
 typedef struct { uint32_t lines; float line_spacing; } QvpGrid;
 /* fit_*: the view transform that shows the whole content (shrink to the viewport height, never enlarge, centred):
-   draw at fit_x + fit_scale·view_x, fit_y + fit_scale·view_y; the host's pan and zoom go on top. */
+   draw at fit_x + fit_scale·view_x, fit_y + fit_scale·view_y; the host's pan and zoom go on top.
+   A dressed page fits the content plus the dress overflow, so the border is in view; fit_x, fit_y still place
+   the content's origin. qvp_dress and qvp_undress refit the current layout: read it again with qvp_layout_current. */
 typedef struct { float scale, offset_x, offset_y, content_w, content_h, line_spacing; uint32_t n_lines; const float* lines; /* n_lines × {dy, slot_top, slot_bottom}; the rows when reflowed */ float fit_scale, fit_x, fit_y; uint32_t reflowed, n_rows; } QvpLayout;
 typedef struct { uint8_t target /* QVP_TARGET_* */; uint32_t a, b, c; const uint32_t* words; uint32_t n_words; } QvpTarget;
 typedef struct { uint8_t selector /* QVP_SELECTOR_* */; uint32_t a, b, c; } QvpSelector;
@@ -124,6 +136,19 @@ typedef struct { uint32_t decoration; uint16_t surah, ayah, juz, hizb, nisf, rub
 typedef struct { uint32_t decoration; uint16_t surah, ayah; uint32_t sign_path; } QvpSajdah;
 typedef struct { uint32_t word, index; uint8_t is_loose_match; } QvpMatch;
 typedef struct { float x0, y0, x1, y1; uint32_t n_words, ayah_mark_decoration; } QvpCropBounds;
+/* ornaments: the strings live as long as the QvpOrnaments, not until the next string call */
+typedef struct { uint32_t kind, lineage, n_parts, has_slices, redistributable, _pad; QvpStr style, riwayah, license_id, license_status, attribution; } QvpOrnament;
+typedef struct { uint32_t color, stroke; QvpStr name; } QvpOrnamentPart;
+typedef struct { uint32_t ayah_mark, surah_header, page_frame /* ornament indices, QVP_NONE for none */; float gap /* text to border, page units */, band_gap /* band to border */,
+                 ayah_mark_scale /* 1 = as tall as the printed ring; 0 = the design's own: QVP_DEFAULT_AYAH_MARK_SCALE_SCAN for a scan, 1 for a font */, page_frame_scale /* 1 = the design's size; the pattern scales as a whole, 0 = 1 */; uint32_t line_art /* QVP_LINE_ART_* bits */;
+                 const uint32_t* colors /* (ornament, part, rgba) triples, NULL for the designs' own */; uint32_t n_colors; } QvpDressSpec;
+typedef struct { uint32_t ayah_mark, surah_header, page_frame, n_ayah_marks, n_surah_headers, n_frame_repeats, frame_stretched, n_draws,
+                 revision /* bumped on every rebuild: cache the ornament raster against it */;
+                 float view_box[4] /* x, y, w, h page units; a border grows it */; float overflow[4] /* left, top, right, bottom viewport px */; } QvpDressInfo;
+/* table: n_draws × 9 uint32: op_start, op_count, pt_start, pt_count, colour, flags, stroke_width (float bits, page
+   units), part, placement (the layout's placement index, as a page draw; QVP_NONE for the border). Ops and points
+   are page units, as QvpGeometry. */
+typedef struct { const uint8_t* ops; uint32_t ops_len; const float* pts; uint32_t pts_len; const uint32_t* table; uint32_t n_draws; } QvpDressGeometry;
 typedef struct { uint16_t number, first_page, ayah_count; uint8_t place, _pad; QvpStr arabic, latin, english; } QvpAtlasSurah;
 typedef struct { uint16_t rubu_al_hizb, surah, ayah, page; } QvpAtlasRubuAlHizb;
 
@@ -287,6 +312,20 @@ void     qvp_reveal_stop(QvpPage*);
 /* crop ---------------------------------------------------------------------------------- */
 int      qvp_crop_bounds(const QvpPage*, const QvpTarget*, float pad, uint8_t keep_ayah_marks, QvpCropBounds* out);
 int      qvp_crop_svg(QvpPage*, const QvpTarget*, float pad, uint8_t keep_ayah_marks, uint32_t background, QvpStr* out);
+
+/* dress: another mushaf's ornaments (ornaments.qvo from the converter) ------------------- */
+QvpOrnaments* qvp_ornaments_load(const uint8_t* bytes, size_t len);   /* NULL on error; the bytes are copied */
+void      qvp_ornaments_free(QvpOrnaments*);
+uint32_t  qvp_ornament_count(const QvpOrnaments*);
+int       qvp_ornament_info(const QvpOrnaments*, uint32_t i, QvpOrnament* out);                    /* 0 = no such ornament */
+int32_t   qvp_ornament_find(const QvpOrnaments*, uint32_t kind, const uint8_t* style, uint32_t len);  /* -1 = none of that kind in that style */
+int       qvp_ornament_part(const QvpOrnaments*, uint32_t i, uint32_t part, QvpOrnamentPart* out);
+int       qvp_dress(QvpPage*, const QvpOrnaments*, const QvpDressSpec*);   /* 0 = refused: an index out of range or of another kind, a band or border with no slot, or all QVP_NONE; replaces any previous dress */
+void      qvp_undress(QvpPage*);
+int       qvp_dress_info(const QvpPage*, QvpDressInfo* out);               /* 0 = not dressed */
+void      qvp_dress_geometry(const QvpPage*, QvpDressGeometry* out);       /* paint it BEHIND the page ink; valid until the next dress, undress or layout */
+void      qvp_dress_clamp(const QvpPage*, const QvpView*, float viewport_w, float viewport_h, QvpView* out);   /* qvp_view_clamp for the content plus the dress overflow: a drag reaches the border, never past it */
+void      qvp_dress_view(const QvpPage*, float scale, float viewport_w, QvpView* out, float* out_size /* w, h */);   /* a host that scrolls the page: the dressed box at scale, centred across viewport_w (x = 0 when wider), top at y = 0; out_size is its size. scale <= 0 fits the box to viewport_w: min(1, viewport_w / dressed width) */
 
 /* atlas (cross-page lookup; atlas.qva from the converter) -------------------------------- */
 QvpAtlas* qvp_atlas_load(const uint8_t* bytes, size_t len);

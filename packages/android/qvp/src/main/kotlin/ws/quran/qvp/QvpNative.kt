@@ -62,6 +62,9 @@ internal object QvpNative {
     @JvmStatic external fun viewZoomAbout(view: FloatArray, fx: Float, fy: Float, factor: Float, min: Float, max: Float): FloatArray
     @JvmStatic external fun viewPan(view: FloatArray, dx: Float, dy: Float): FloatArray
     @JvmStatic external fun viewClamp(view: FloatArray, contentW: Float, contentH: Float, viewportW: Float, viewportH: Float): FloatArray
+    @JvmStatic external fun dressClamp(h: Long, view: FloatArray, viewportW: Float, viewportH: Float): FloatArray
+    // {scale, offsetX, offsetY, width, height}
+    @JvmStatic external fun dressView(h: Long, scale: Float, viewportW: Float): FloatArray
     @JvmStatic external fun viewAnchor(h: Long, view: FloatArray, word: Int, nx: Float, ny: Float, toX: Float, toY: Float, viewportW: Float, viewportH: Float): FloatArray
     @JvmStatic external fun viewToLayout(h: Long, view: FloatArray, vx: Float, vy: Float): FloatArray
     @JvmStatic external fun viewSwipe(dx: Float, dy: Float, vx: Float, vy: Float): Int
@@ -175,6 +178,28 @@ internal object QvpNative {
     @JvmStatic external fun passageAyahs(h: Long): FloatArray
     @JvmStatic external fun passageDrawList(h: Long): IntArray
     @JvmStatic external fun passagePlacements(h: Long): FloatArray
+    // dress: an ornament set is its own handle. An ornament reads as numbers {kind, lineage, nParts, hasSlices,
+    // redistributable} and strings {style, riwayah, licenseId, licenseStatus, attribution}; a part as {colour, stroke}
+    // and its name. A dress spec goes in by value (-1 is no ornament; colours are (ornament, part, rgba) triples).
+    // The info answers 9 ints {ayahMark, surahHeader, pageFrame, nAyahMarks, nSurahHeaders, nFrameRepeats,
+    // frameStretched, nDraws, revision}, then viewBox[4] and overflow[4] as float bits. The geometry comes as the
+    // page geometry does, with 9 ints per draw {opStart, opCount, ptStart, ptCount, colour, flags, strokeWidth
+    // (float bits), part, placement (-1 for the border)}.
+    @JvmStatic external fun ornamentsLoad(bytes: ByteArray): Long
+    @JvmStatic external fun ornamentsFree(h: Long)
+    @JvmStatic external fun ornamentCount(h: Long): Int
+    @JvmStatic external fun ornamentInfo(h: Long, i: Int): IntArray?
+    @JvmStatic external fun ornamentStrings(h: Long, i: Int): Array<String>?
+    @JvmStatic external fun ornamentFind(h: Long, kind: Int, style: String): Int
+    @JvmStatic external fun ornamentPart(h: Long, i: Int, part: Int): IntArray?
+    @JvmStatic external fun ornamentPartName(h: Long, i: Int, part: Int): String?
+    @JvmStatic external fun dress(h: Long, set: Long, ayahMark: Int, surahHeader: Int, pageFrame: Int, gap: Float, bandGap: Float,
+                                  ayahMarkScale: Float, pageFrameScale: Float, lineArt: Int, colors: IntArray?): Boolean
+    @JvmStatic external fun undress(h: Long)
+    @JvmStatic external fun dressInfo(h: Long): IntArray?
+    @JvmStatic external fun dressGeomOps(h: Long): ByteArray
+    @JvmStatic external fun dressGeomPts(h: Long): FloatArray
+    @JvmStatic external fun dressGeomTable(h: Long): IntArray
     // names
     @JvmStatic external fun markName(m: Int): String
     @JvmStatic external fun familyName(f: Int): String

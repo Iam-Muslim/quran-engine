@@ -69,6 +69,63 @@ class QvpPage(bytes: ByteArray) : AutoCloseable {
         lineSpacing = QvpNative.pageLineSpacing(h)
     }
 
+    // ── dress: another mushaf's ornaments ──
+    /**
+     * Put other ornaments on the page: up to one per kind, from [set]. The engine places each one
+     * from a measurement and hides only the printed ring and the native band. Returns the readout,
+     * or null when the engine refused the spec (an index out of range, an ornament of another kind,
+     * or nothing to dress). Replaces any previous dress.
+     */
+    fun dress(set: QvpOrnaments, spec: QvpDressSpec = QvpDressSpec()): QvpDressInfo? {
+        // Resolve every style name before the spec goes to the engine.
+        fun index(ref: QvpOrnamentRef?, kind: QvpOrnamentKind): Int =
+            when (val r = ref ?: spec.style?.let { QvpOrnamentRef.Style(it) }) {
+                null, QvpOrnamentRef.None -> NONE
+                is QvpOrnament -> r.index
+                is QvpOrnamentRef.Index -> r.index
+                is QvpOrnamentRef.Style -> set.find(kind, r.style)?.index ?: NONE
+            }
+        val ayahMark = index(spec.ayahMark, QvpOrnamentKind.AYAH_MARK)
+        val surahHeader = index(spec.surahHeader, QvpOrnamentKind.SURAH_HEADER)
+        val pageFrame = index(spec.pageFrame, QvpOrnamentKind.PAGE_FRAME)
+        dressDraws = null
+        val ok = QvpNative.dress(h, set.handle, ayahMark, surahHeader, pageFrame, spec.gap, spec.bandGap,
+                                 spec.ayahMarkScale, spec.pageFrameScale, spec.lineArtBits(), spec.colorTriples())
+        // the dress refits the page, so the layout the wrapper holds is stale now
+        readLayout()
+        return if (ok) dressInfo() else null
+    }
+    /** Take the ornaments off: the printed rings and bands come back. */
+    fun undress() { QvpNative.undress(h); dressDraws = null; readLayout() }
+    /** The view clamp over the content plus the dress overflow: a drag reaches the border, never past it.
+     * An undressed page gets the plain clamp. */
+    fun dressClamp(view: QvpView, viewportW: Float, viewportH: Float): QvpView =
+        QvpView.of(QvpNative.dressClamp(h, view.floats(), viewportW, viewportH))
+    /** For a host that scrolls the page itself: the view that shows the dressed box at [scale],
+     * centred across [viewportW] (at x = 0 when wider) with its top at 0, and the box's size at that
+     * scale, which is the size to give the canvas. An undressed page gets its content centred at the
+     * top and the content's size. */
+    fun dressView(scale: Float, viewportW: Float): QvpDressView =
+        QvpNative.dressView(h, scale, viewportW).let { QvpDressView(QvpView.of(it), it[3], it[4]) }
+    /** The readout, or null when the page is not dressed. */
+    fun dressInfo(): QvpDressInfo? = QvpNative.dressInfo(h)?.let { QvpDressInfo.of(it) }
+    /** Counts up whenever the ornament layer is rebuilt: a new dress, or a layout that moved the
+     * page under the border. 0 when undressed. Key a raster of the layer on it. */
+    fun dressRevision(): Int = dressInfo()?.revision ?: 0
+    /**
+     * The ornament display list, in page units, in drawing order. Paint it behind the page ink. Built
+     * once per [dressRevision]; empty when the page is not dressed.
+     */
+    fun dressGeometry(): List<QvpOrnamentDraw> {
+        val info = dressInfo() ?: return emptyList<QvpOrnamentDraw>().also { dressDraws = null }
+        dressDraws?.let { if (dressDrawsRevision == info.revision) return it }
+        val out = ornamentDraws(QvpNative.dressGeomOps(h), QvpNative.dressGeomPts(h), QvpNative.dressGeomTable(h))
+        dressDraws = out; dressDrawsRevision = info.revision
+        return out
+    }
+    private var dressDraws: List<QvpOrnamentDraw>? = null
+    private var dressDrawsRevision = 0
+
     // ── geometry ──
     fun pathFlags(i: Int) = table[i * 8 + 4]
     fun pathKind(i: Int) = pathFlags(i) and 0xff
@@ -117,7 +174,11 @@ class QvpPage(bytes: ByteArray) : AutoCloseable {
     }
 
     private var lazyPaths: Array<Path>? = null
-    private companion object { val LAZY = Path() }
+    private companion object {
+        val LAZY = Path()
+        /** QVP_NONE as the bridge passes it. */
+        const val NONE = -1
+    }
 
     // ── words / text ──
     fun wordKey(i: Int) = words[i].wordKey

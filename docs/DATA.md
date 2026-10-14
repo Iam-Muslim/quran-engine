@@ -17,7 +17,8 @@ and under what terms an app may use it.
 | `surah-names/qvp/all.qvp`, `surah-names/svg/all.svg` | all 114 titles on one frame-free sprite sheet |
 | `surah-names/surah-names.woff2` | all titles as OpenType/CFF glyphs at private-use code points |
 | `surah-names/surah-names.css`, `surah-names/map.json` | browser classes and the code-point and metadata map |
-| `VERSION.json` | provenance: data version, source release, engine commit, format version, page and surah-name counts, and digests of every generated data file |
+| `VERSION.json` | provenance: data version, source release, engine commit, format version, page and surah-name counts, digests of every generated data file, and, when a set was packaged, an `ornaments` record (source, source commit, redistributable only) |
+| `ornaments.qvo` | the ornament set in the QVO1 format: every asset of `quran-ws/quran-assets` whose licence is confirmed, today the 40 font-derived ayah markers |
 
 The data covers 604 pages, 77,432 words, 6,236 ayahs and 114 surahs. The individual QVPs
 add about 0.35 MB, the WOFF2 font about 0.13 MB, and the optional SVG and combined forms
@@ -32,6 +33,24 @@ version 4, 1441 AH**, in the Hafs reading, as vector artwork. The immediate sour
 `hafs-kfgqpc` bundle): one SVG per page with every word tagged by its key, plus an index of
 the text forms. `docs/UPSTREAM-DATA-ISSUES.md` lists what was found wrong in that source
 and fixed there; the converter never patches data.
+
+## The ornament set
+
+`ornaments.qvo` is built by `qvp-convert ornaments <quran-assets checkout> ornaments.qvo
+--redistributable` from a pinned commit of `quran-ws/quran-assets`, recorded in
+`VERSION.json` under `ornaments.source_commit`. Only assets whose catalogue licence status
+is `confirmed` go in. `scripts/package-data.sh` refuses a set that holds any ornament
+whose licence is not confirmed. The scanned ornaments of other printed mushafs are traced from
+designs that belong to their publishers and stay at CC BY-NC-SA 4.0, provisional, until
+each publisher settles permission. They are not in any release. Build a local set without
+`--redistributable` to use them, and read each ornament's licence, which the engine
+reports, before you publish a page wearing it.
+
+The format has no arc, so the converter writes each arc, circle, ellipse and rounded
+corner in an ornament as cubic curves. The cubics follow the source curve to within 0.1
+asset units, too close to see, but they are an approximation, not the source curve. In the
+released set this applies to four ayah markers, `font-012` in the extralight, light,
+regular-black and thin weights.
 
 ## How it is built
 

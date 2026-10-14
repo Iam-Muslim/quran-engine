@@ -42,6 +42,7 @@
 <header>
   <div><h1>Mushaf Vector Reader</h1><div class="sub">QVP engine in wasm · host Canvas2D · every decision in the engine</div></div>
   <div class="nav">
+    <button id="themeToggle" title="dark / light">dark</button>
     <input id="goto" type="text" placeholder="2:255 · Yasin · juz 30" style="width:150px" title="ayah key, surah name or 'juz N'">
     <button id="prev" title="Previous page">◀</button>
     <input id="pageNo" type="number" min="1" max="604" value="1">
@@ -115,6 +116,33 @@
       <div class="row" style="margin-top:6px"><button id="surahFrames" class="on">Native surah frame</button></div>
       <div class="hint">Turn the native frame off and the host draws its own, around the boxes <code>page.surahHeadersView()</code> reports: one for the frame, one for the title ink. This mushaf's artwork carries no frame yet, so only the host frame shows.</div>
       <div class="hint">Leading only grows: the printed lineSpacing is the floor, so the lines can never close up, and the text width is always the viewport's. The knobs spend the empty paper a tall screen leaves above and below the printed page.</div>
+    </section>
+    <section>
+      <h2>Dress (another mushaf's ornaments)</h2>
+      <div class="row">
+        <label>mushaf <select id="dressStyle"><option value="">as printed</option></select></label>
+        <span class="hint">medallion, band and border together; mix below</span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label>medallion <select id="dressMark"><option value="">as printed</option></select></label>
+        <label>band <select id="dressHeader"><option value="">as printed</option></select></label>
+        <label>border <select id="dressFrame"><option value="">none</option></select></label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <b>line art</b>
+        <label><input id="dressLineMark" type="checkbox"> medallion</label>
+        <label><input id="dressLineHeader" type="checkbox"> band</label>
+        <label><input id="dressLineFrame" type="checkbox"> border</label>
+        <b>breathing space</b><input id="dressGap" type="range" min="0" max="24" step="1" value="5" style="flex:1"><span id="dressGapVal" class="hint">5</span>
+        <b>band to border</b><input id="dressBandGap" type="range" min="0" max="24" step="1" value="5" style="flex:1"><span id="dressBandGapVal" class="hint">5</span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <b>medallion size</b><input id="dressMarkScale" type="range" min="0.5" max="2.5" step="0.05" value="1" style="flex:1"><span id="dressMarkScaleVal" class="hint">×1.00</span>
+        <b>border size</b><input id="dressFrameScale" type="range" min="0.5" max="2.5" step="0.05" value="1" style="flex:1"><span id="dressFrameScaleVal" class="hint">×1.00</span>
+        <button id="undress">As printed</button>
+      </div>
+      <div class="row" style="margin-top:6px" id="dressParts"></div>
+      <div id="dressInfo" class="hint" style="white-space:pre-line"></div>
     </section>
     <section>
       <h2>Reflow (engine)</h2>

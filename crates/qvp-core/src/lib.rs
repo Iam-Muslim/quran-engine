@@ -6,6 +6,7 @@
 
 pub mod crop;
 pub mod defaults;
+pub mod dress;
 pub mod highlight;
 pub mod hit;
 pub mod layout;
@@ -22,6 +23,10 @@ pub mod zoom;
 mod zoom_table;
 
 pub use crop::CropBounds;
+pub use dress::{
+    line_art_bit, Dress, DressSpec, OrnamentDraw, LINE_ART_ALL, LINE_ART_AYAH_MARK, LINE_ART_PAGE_FRAME,
+    LINE_ART_SURAH_HEADER, ODF_EVENODD, ODF_STROKE,
+};
 pub use highlight::{BandBox, BandHeight, HighlightMode, HighlightStyle, ViewBox};
 pub use hit::{Hit, HitArea, HitOptions, LineBand};
 pub use layout::{Draw, Grid, Layout, LayoutSpec};
@@ -32,6 +37,7 @@ pub use passage::{
 };
 pub use qvp_format;
 pub use qvp_format::atlas::Atlas;
+pub use qvp_format::ornaments::{Lineage, Ornament, OrnamentKind, OrnamentSet};
 pub use reflow::{Breaks, Fill, GapMode, Placement, ReflowSpec, Reflowed};
 pub use selection::Selection;
 pub use style::{
@@ -130,6 +136,10 @@ pub struct Page {
     pub(crate) reveal: Option<Reveal>,
     pub(crate) highlights: Vec<highlight::Highlight>,
     pub selection: Selection,
+    pub(crate) dress: Option<dress::Dress>,
+    /// Counts up across every rebuild of the ornament layer of this page, so a host's
+    /// raster cache of that layer knows when it went stale.
+    pub(crate) dress_revision: u32,
     pub(crate) clock_ms: f64,
     pub(crate) anim: Vec<PathAnim>,
     pub(crate) state_dirty: bool,
@@ -432,6 +442,8 @@ impl Page {
             reveal: None,
             highlights: vec![],
             selection: Selection::default(),
+            dress: None,
+            dress_revision: 0,
             clock_ms: 0.0,
             anim: vec![PathAnim::default(); n],
             state_dirty: true,

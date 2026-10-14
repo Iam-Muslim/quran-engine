@@ -607,6 +607,90 @@ Drive the highlight with `moveHighlight(h, T.word(i))`.
 returns a standalone SVG string with the current colours (masks, themes and highlights'
 ink applied). The medallion is kept only when the whole ayah is inside the crop.
 
+## Dress (another mushaf's ornaments)
+
+A page carries the King Fahd Complex's own medallions, surah bands and page furniture.
+`dress` puts other ornaments on it: an ayah medallion, a surah band and a page border from
+another printed mushaf or from a font, and hands back a display list to paint behind the
+ink.
+
+```js
+const set = engine.loadOrnaments(await fetchBytes('ornaments.qvo'));
+const info = page.dress(set, { style: 'mushaf-qalon' });            // its medallion, band and border
+const marker = set.find('ayah_mark', 'font-003-regular');
+const mixed = page.dress(set, { style: 'mushaf-qalon', ayahMark: marker, gap: 5 });   // a kind key overrides the style
+// → {ayahMark, surahHeader, pageFrame, ayahMarks, surahHeaders, frameRepeats, frameStretched, draws, revision, viewBox, overflow}
+for (const o of page.dressGeometry()) { /* {path, color, kind, evenOdd, stroke, strokeWidth, part, placement} */ }
+page.undress();
+```
+
+`set.list` is every ornament the set holds: `{index, kind, lineage, style, riwayah,
+hasSlices, licence, parts}`, and `set.styles()` groups it by mushaf with the ornament of each
+kind. A dress names a `style`, which takes that mushaf's medallion, band and border together,
+or up to one ornament per kind, as an ornament, its index or a style name; a kind key
+overrides the style for that kind. `parts` is the design's printed palette, and `colors:
+[[ornament, part, colour]]` repaints any of them. The design's slot is the transparent
+window it leaves for the number, the name or the text area. The paper of a scanned design,
+its pure white `c1`, is left open too, so the host's page shows through; repaint `c1` to put a
+paper colour back. `gap` is the air between the text and the border, and `bandGap` the air between a band and
+the border, both in page units; a band is centred in the column. `ayahMarkScale` sizes the
+medallion against the printed ring (0, the default, takes the design's own: 1.5 for a scanned
+mushaf's cartouche, which wants more room than the ring's box, and 1 for a font marker).
+`pageFrameScale` sizes the border against the design's own: the pattern scales as a whole,
+so a bigger border fits fewer motifs along each edge and a smaller one more, and nothing is
+stretched. A frame without slices keeps its printed proportions. `lineArt` draws kinds as line
+art, their constant-width strokes alone, so
+there is one ink: `true` for every kind, or a list such as `['surah_header']` for the bands
+alone. Under reflow a band holds its title: the engine caps the title's growth so the tallest
+title on the page stays inside the band's slot, the way `bannerZoom` does. A scanned design's line art is the catalogue's own `line.svg`, stroke for stroke; a
+font marker has no linework, so its fills are drawn as outlines in its darkest ink instead.
+
+**Every ornament is placed from a measurement**, never a fixed offset: the medallion from
+the printed ring's centre and radius, with the design's slot centre on the ring centre; the
+band from the surah title's box across the text column; the border from the laid-out page
+box. The same rules apply on every page.
+
+**A dress the engine cannot place is refused.** `dress` returns null, and the page is left
+undressed, when:
+
+- an index is out of range;
+- an ornament is of another kind than its key (a band given as `ayahMark`);
+- a band or a border has no slot, so there is no window to put the title or the text in;
+- every kind is left out.
+
+**Paint the display list behind the page ink.** Only the printed ring and the native band
+are hidden; the numeral inside the ring is the print's own ink and stays on top. Each draw
+carries a `placement`, the same index a page draw carries into the layout's placements, so
+a host applies the transform it already applies to the ink: a medallion follows its word
+onto its row under reflow, and a band follows its title. The border carries `null` and is
+drawn in layout space. `CanvasRenderer` does all of this.
+
+**A dressed page is bigger than its text.** `viewBox` is the page box the border grew, in
+page units, and `overflow` is how far the border reaches past the laid-out content on each
+side, in viewport px. The layout's fit includes the dress: `fitScale`, `fitX` and `fitY` fit
+the content plus the overflow in the viewport, so a host that draws at the layout's fit shows
+the whole border with no arithmetic of its own. `fitX` and `fitY` still place the content's
+origin, and the overflow sits to their left and above them. A printed page shrinks to fit
+the dressed box and is never enlarged. A reflowed page keeps `fitScale` at 1 and puts the top
+of the border at the top of the viewport. `dress` and `undress` refit the current layout, and
+the web wrapper reads it again into `page.currentLayout`. To keep a pan inside the dressed
+box, clamp with `page.dressClamp(view, viewportW, viewportH)` in place of
+`engine.viewClamp`: a drag then reaches the border's edges and never goes past them. A host
+that scrolls the page itself calls `page.dressView(scale, viewportW)`. It returns the view
+that puts the dressed box's top at 0 and centres it across the viewport. It also returns the
+box's `width` and `height`: the size to give the canvas. A `scale` of 0 asks the engine to fit
+the dressed box to `viewportW`. The scale is then `min(1, viewportW / dressed width)`, so the
+whole border fits across and the page is never enlarged. A reflowed dressed page needs no
+such step: the engine narrows its rows so the border fits across the viewport. A new
+layout re-places the dress and bumps `revision` (on every rebuild: a new dress, and every
+layout); a host that rasterises the layer keys its cache on that number.
+
+**The ornaments are not part of the pages.** The data release carries an `ornaments.qvo`
+of the assets whose licence is confirmed (`docs/DATA.md`). A fuller set is built from a
+`quran-ws/quran-assets` checkout by `qvp-convert ornaments`. Each ornament carries its own
+`licence` (`{id, status, redistributable, attribution}`) and the engine reports it so a host
+can say so on screen. Read it before you publish a dressed page.
+
 ## Atlas (cross-page)
 
 `atlas.pageOf(s,a)`, `pageRange(page)`, `surah(n)`, `surahs()`, `pageOfSurah(n)`,
@@ -812,6 +896,18 @@ says which wrapper binds which.
 | names | `qvp_category_name` | `engine.categoryName(id)` | Return a mark category's name. |
 | names | `qvp_mark_from_name` | `engine.markFromName(name)` | Return a mark's id by name; 255 when unknown. |
 | names | `qvp_mark_category` | `engine.markCategory(id)` | Return the category a mark belongs to. |
+| dress | `qvp_ornaments_load` | `engine.loadOrnaments(bytes)` | Decode an ornament set; null on a malformed file; the bytes are copied. |
+| dress | `qvp_ornaments_free` | `set.free()` | Free the ornament set. |
+| dress | `qvp_ornament_count` | `set.count` | Return how many ornaments the set holds. |
+| dress | `qvp_ornament_info` | `set.list[i]` | Return one ornament: kind, lineage, style, riwayah, licence and part count. |
+| dress | `qvp_ornament_find` | `set.find(kind, style)` | Return the ornament of one kind in one style, or null. The C call returns its index, or −1. |
+| dress | `qvp_ornament_part` | `set.list[i].parts[k]` | Return one printed colour of an ornament: colour, stroke flag and name. |
+| dress | `qvp_dress` | `page.dress(set, spec)` | Place the chosen ornaments on the page from its measurements. |
+| dress | `qvp_undress` | `page.undress()` | Take the ornaments off; the printed rings and bands come back. |
+| dress | `qvp_dress_info` | `page.dressInfo()` | Return the readout: chosen ornaments, counts, revision, grown page box and overflow. |
+| dress | `qvp_dress_geometry` | `page.dressGeometry()` | Return the ornament display list, with a layout placement on each draw. |
+| dress | `qvp_dress_clamp` | `page.dressClamp(view, viewportW, viewportH)` | Clamp a view to the content plus the dress overflow, so a drag reaches the border and stops there. |
+| dress | `qvp_dress_view` | `page.dressView(scale, viewportW)` | Return `{view, width, height}` for a host that scrolls the page: the dressed box at `scale`, centred, with its top at 0, and its size. A `scale` of 0 fits the box to `viewportW`, never above 1. |
 | names | `qvp_version` | `engine.version()` | Return the engine version as a string, `0.2.0`. |
 | names | `qvp_format_version` | `engine.formatVersion()` | Return the page format version the engine reads. |
 | names | `qvp_engine_name` | `engine.engineName()` | Return the engine's name, `qvp`. |

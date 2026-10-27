@@ -1,6 +1,12 @@
 ## Unreleased
 
-Nothing yet.
+- Platform support: added iOS, macOS, Windows, and Linux platforms via Dart FFI.
+  - iOS & macOS: CocoaPods podspecs linking against `QvpEngine.xcframework` using `DynamicLibrary.process()`.
+  - Windows & Linux: CMake bundling and runtime resolution of `qvp_ffi.dll` and `libqvp_ffi.so`.
+- Rendering performance: replaced raster base-ink caching (`toImageSync`) with direct GPU vector
+  `ui.Picture` caching in layout units. Pinching and panning no longer invalidate the base ink picture.
+- Caching: memoized `QvpPage.ayahMarks()` and cached placement/dress/band queries in `_InkCache`.
+- Engine: added `QvpPage.batch(fn)` to suppress multiple listener notifications during batch updates.
 
 ## 0.7.0
 

@@ -1014,12 +1014,39 @@ class QvpEngine {
   factory QvpEngine.open({String? path}) => QvpEngine(resolveLibrary(path: path));
 
   static ffi.DynamicLibrary resolveLibrary({String? path}) {
+    if (kIsWeb) {
+      throw UnsupportedError(
+        'QvpEngine over dart:ffi runs on Android, iOS, Windows, and macOS. '
+        'On Web, use WebAssembly/Canvas2D (@quran.ws/engine).',
+      );
+    }
     if (path != null) return ffi.DynamicLibrary.open(path);
     if (Platform.isAndroid) return ffi.DynamicLibrary.open('libqvp_ffi.so');
-    if (Platform.isIOS || Platform.isMacOS) return ffi.DynamicLibrary.process();
+    if (Platform.isIOS || Platform.isMacOS) {
+      final lib = ffi.DynamicLibrary.process();
+      try {
+        lib.lookup<ffi.NativeFunction<ffi.IntPtr Function()>>('qvp_flutter_dummy_symbol_to_enforce_linking');
+      } catch (_) {}
+      return lib;
+    }
     final env = Platform.environment['QVP_LIB'];
     if (env != null && env.isNotEmpty) return ffi.DynamicLibrary.open(env);
-    if (Platform.isWindows) return ffi.DynamicLibrary.open('qvp_ffi.dll');
+    if (Platform.isWindows) {
+      final local = File('qvp_ffi.dll');
+      if (local.existsSync()) return ffi.DynamicLibrary.open(local.absolute.path);
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      final inExe = File('${exeDir.path}${Platform.pathSeparator}qvp_ffi.dll');
+      if (inExe.existsSync()) return ffi.DynamicLibrary.open(inExe.path);
+      return ffi.DynamicLibrary.open('qvp_ffi.dll');
+    }
+    if (Platform.isLinux) {
+      final local = File('libqvp_ffi.so');
+      if (local.existsSync()) return ffi.DynamicLibrary.open(local.absolute.path);
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      final inLib = File('${exeDir.path}/lib/libqvp_ffi.so');
+      if (inLib.existsSync()) return ffi.DynamicLibrary.open(inLib.path);
+      return ffi.DynamicLibrary.open('libqvp_ffi.so');
+    }
     return ffi.DynamicLibrary.open('libqvp_ffi.so');
   }
 
@@ -1270,13 +1297,36 @@ class QvpPage extends ChangeNotifier {
   QvpBindings get _b => engine.b;
   QvpEngine get _e => engine;
 
+  int _batchDepth = 0;
+  bool _needsNotify = false;
+
+  /// Runs [fn] with notifications suppressed until complete, firing a single notification at the end.
+  void batch(void Function() fn) {
+    _batchDepth++;
+    try {
+      fn();
+    } finally {
+      _batchDepth--;
+      if (_batchDepth == 0 && _needsNotify) {
+        _needsNotify = false;
+        _touch();
+      }
+    }
+  }
+
   void _touch() {
+    _cachedAyahMarks = null;
+    if (_batchDepth > 0) {
+      _needsNotify = true;
+      return;
+    }
     revision++;
     notifyListeners();
   }
 
   /// Frees the native page. The copied geometry and info lists stay usable.
   void free() {
+    _cachedAyahMarks = null;
     if (_h != ffi.nullptr) {
       engine.b.pageFree(_h);
       _h = ffi.nullptr;
@@ -1508,11 +1558,14 @@ class QvpPage extends ChangeNotifier {
     }, growable: false);
   }
 
+  List<QvpAyahMark>? _cachedAyahMarks;
+
   /// Real ayah medallions.
   List<QvpAyahMark> ayahMarks() {
+    if (_cachedAyahMarks != null) return _cachedAyahMarks!;
     final o = _e._out<QvpAyahMarkC>(), cap = _e._cap(ffi.sizeOf<QvpAyahMarkC>());
     final n = _b.ayahMarks(_p, o, cap).clamp(0, cap);
-    return List.generate(n, (i) {
+    return _cachedAyahMarks = List.generate(n, (i) {
       final m = (o + i).ref;
       return QvpAyahMark(decoration: m.decoration, surah: m.surah, ayah: m.ayah, line: m.line, cx: m.cx, cy: m.cy, r: m.r, ornamentPath: m.ornamentPath, numeralPath: m.numeralPath);
     }, growable: false);

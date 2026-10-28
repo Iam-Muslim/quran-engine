@@ -555,12 +555,14 @@ class _PictureCacheEntry {
   _PictureCacheEntry(this.key, this.picture);
 
   void dispose() {
-    picture.dispose();
+    try {
+      picture.dispose();
+    } on Object catch (_) {}
   }
 }
 
 class _LruCache {
-  static const int maxEntries = 16;
+  static const int maxEntries = 32;
   final LinkedHashMap<String, _PictureCacheEntry> _entries = LinkedHashMap();
 
   _PictureCacheEntry? get(String key) {
@@ -705,18 +707,26 @@ class _InkCache {
   }
 
   void _dropPicture() {
-    if (picture != null && !_globalInkCache.containsPicture(picture!)) {
-      picture!.dispose();
+    if (picture != null) {
+      if (!_globalInkCache.containsPicture(picture!)) {
+        try {
+          picture!.dispose();
+        } on Object catch (_) {}
+      }
+      picture = null;
     }
-    picture = null;
   }
 
   void dropOrnaments() {
-    if (ornaments != null && !_globalOrnamentCache.containsPicture(ornaments!)) {
-      ornaments!.dispose();
+    if (ornaments != null) {
+      if (!_globalOrnamentCache.containsPicture(ornaments!)) {
+        try {
+          ornaments!.dispose();
+        } on Object catch (_) {}
+      }
+      ornaments = null;
+      ornamentKey = '';
     }
-    ornaments = null;
-    ornamentKey = '';
   }
 
   void dispose() {
@@ -819,7 +829,7 @@ class _QvpPainter extends CustomPainter {
     if (kept != null) {
       cache.ornaments = kept.picture;
       cache.ornamentKey = key;
-    } else if (key != cache.ornamentKey || cache.ornaments == null) {
+    } else {
       cache.dropOrnaments();
       final rec = ui.PictureRecorder();
       final c = ui.Canvas(rec);
@@ -945,7 +955,7 @@ class _QvpPainter extends CustomPainter {
     if (kept != null) {
       cache.picture = kept.picture;
       cache.key = key;
-    } else if (key != cache.key || cache.picture == null) {
+    } else {
       final sw = Stopwatch()..start();
       final rec = ui.PictureRecorder();
       final c = ui.Canvas(rec);

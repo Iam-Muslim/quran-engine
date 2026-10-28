@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
+import 'dart:ui' show Path, PathFillType, Rect;
 
 import 'package:flutter/services.dart' show rootBundle;
 
@@ -10,6 +11,10 @@ import '../types.dart';
 import 'qvp_backend.dart';
 
 QvpWebBackend? _defaultWebBackend;
+
+const _formNames = ['rasm_uthmani', 'rasm_imlai', 'qpc', 'rasm', 'search'];
+const _maskModeNames = ['hide', 'block', 'blur'];
+const _divKindNames = {0: 'juz', 1: 'hizb', 2: 'nisf', 3: 'rubu_al_hizb'};
 
 /// Creates or returns the Web backend over dart:js_interop and WebAssembly.
 QvpBackend createDefaultBackend({String? path, dynamic library}) {
@@ -49,23 +54,16 @@ class QvpWebBackend implements QvpBackend {
 
   final JSObject js;
 
-  static JSObject? _resolveEngineClass() {
-    if (globalContext.has('QvpEngine')) {
-      final obj = globalContext['QvpEngine'];
-      if (obj != null && !obj.isUndefined && !obj.isNull) {
-        return obj as JSObject;
-      }
+  /// Global `window.QVP` namespace defined by `web/qvp.js`.
+  static JSObject get _qvp {
+    final qvp = globalContext['QVP'] as JSObject?;
+    if (qvp == null) {
+      throw StateError(
+        'QVP JavaScript library is not loaded. '
+        'Ensure qvp.js is included in web/index.html or available as an asset.',
+      );
     }
-    if (globalContext.has('QVP')) {
-      final qvp = globalContext['QVP'] as JSObject?;
-      if (qvp != null && qvp.has('QvpEngine')) {
-        final obj = qvp['QvpEngine'];
-        if (obj != null && !obj.isUndefined && !obj.isNull) {
-          return obj as JSObject;
-        }
-      }
-    }
-    return null;
+    return qvp;
   }
 
   static Future<QvpWebBackend> init({
@@ -73,58 +71,19 @@ class QvpWebBackend implements QvpBackend {
     String? wasmAssetPath,
     String? wasmUrl,
   }) async {
-    await _ensureJsLoaded();
+    await _ensureLoaded();
 
-    Uint8List bytes;
+    final Uint8List bytes;
     if (wasmBytes != null) {
       bytes = Uint8List.fromList(wasmBytes);
     } else if (wasmAssetPath != null) {
       final data = await rootBundle.load(wasmAssetPath);
       bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     } else {
-      Uint8List? loaded;
-      for (final p in [
-        'packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
-        'assets/wasm/qvp_ffi.wasm',
-        'assets/packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
-      ]) {
-        try {
-          final data = await rootBundle.load(p);
-          loaded = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-          break;
-        } catch (_) {}
-      }
-
-      if (loaded != null) {
-        bytes = loaded;
-      } else {
-        final urls = [
-          if (wasmUrl != null) wasmUrl,
-          'qvp_ffi.wasm',
-          'assets/packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
-          'assets/wasm/qvp_ffi.wasm',
-        ];
-        Uint8List? fetched;
-        for (final u in urls) {
-          try {
-            fetched = await _fetchBytes(u);
-            if (fetched.isNotEmpty) break;
-          } catch (_) {}
-        }
-        if (fetched == null || fetched.isEmpty) {
-          throw StateError('Could not load qvp_ffi.wasm from assets or network URLs: $urls');
-        }
-        bytes = fetched;
-      }
+      bytes = await _loadDefaultWasm(wasmUrl);
     }
 
-    final jsEngineClass = _resolveEngineClass();
-    if (jsEngineClass == null) {
-      throw StateError(
-        'QvpEngine not defined in JavaScript context. Ensure qvp.js is loaded in index.html or available as an asset.',
-      );
-    }
-
+    final jsEngineClass = _qvp['QvpEngine'] as JSObject;
     final promise = jsEngineClass.callMethod<JSPromise>('init'.toJS, bytes.toJS);
     final jsInstance = (await promise.toDart) as JSObject;
 
@@ -133,57 +92,39 @@ class QvpWebBackend implements QvpBackend {
     return backend;
   }
 
-  static Future<void> _ensureJsLoaded() async {
-    if (_resolveEngineClass() != null) return;
+  static Future<void> _ensureLoaded() async {
+    if (globalContext.has('QVP')) return;
 
-    for (final p in [
-      'packages/qvp_flutter/assets/js/qvp.js',
-      'assets/js/qvp.js',
-      'assets/packages/qvp_flutter/assets/js/qvp.js',
-    ]) {
-      try {
-        final jsText = await rootBundle.loadString(p);
-        _injectScript(jsText);
-        if (_resolveEngineClass() != null) return;
-      } catch (_) {}
-    }
+    try {
+      final jsText = await rootBundle.loadString('packages/qvp_flutter/assets/js/qvp.js');
+      _injectScript(jsText);
+      if (globalContext.has('QVP')) return;
+    } catch (_) {}
 
-    for (final u in [
-      'qvp.js',
-      'assets/packages/qvp_flutter/assets/js/qvp.js',
-      'packages/qvp_flutter/assets/js/qvp.js',
-      'assets/js/qvp.js',
-    ]) {
-      try {
-        final jsText = await _fetchString(u);
-        _injectScript(jsText);
-        if (_resolveEngineClass() != null) return;
-      } catch (_) {}
-    }
-
-    // If loaded via a deferred or async script tag in index.html, wait briefly
-    for (var i = 0; i < 20; i++) {
-      if (_resolveEngineClass() != null) return;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
+    try {
+      final jsText = await _fetchString('qvp.js');
+      _injectScript(jsText);
+    } catch (_) {}
   }
 
   static void _injectScript(String code) {
+    final doc = globalContext['document'] as JSObject?;
+    if (doc != null) {
+      final script = doc.callMethod<JSObject>('createElement'.toJS, 'script'.toJS);
+      script['text'] = code.toJS;
+      final head = (doc['head'] ?? doc['body']) as JSObject?;
+      head?.callMethod('appendChild'.toJS, script);
+    }
+  }
+
+  static Future<Uint8List> _loadDefaultWasm(String? wasmUrl) async {
     try {
-      final doc = globalContext['document'] as JSObject?;
-      if (doc != null) {
-        final script = doc.callMethod<JSObject>('createElement'.toJS, 'script'.toJS);
-        script['text'] = code.toJS;
-        final head = (doc['head'] ?? doc['body']) as JSObject?;
-        if (head != null) {
-          head.callMethod('appendChild'.toJS, script);
-          return;
-        }
-      }
-    } catch (_) {}
-    try {
-      globalContext.callMethod('eval'.toJS, code.toJS);
-    } catch (_) {}
+      final data = await rootBundle.load('packages/qvp_flutter/assets/wasm/qvp_ffi.wasm');
+      return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+    } catch (_) {
+      final url = wasmUrl ?? 'qvp_ffi.wasm';
+      return _fetchBytes(url);
+    }
   }
 
   static Future<Uint8List> _fetchBytes(String url) async {
@@ -226,15 +167,15 @@ class QvpWebBackend implements QvpBackend {
     ..['c'] = s.c.toJS;
 
   JSObject _hlToJs(QvpHighlightStyle st) => JSObject()
-    ..['mode'] = (const {'ink': 0, 'band': 1, 'both': 2}[st.mode] ?? 1).toJS
-    ..['height'] = (st.height == 'ink' ? 1 : 0).toJS
+    ..['mode'] = st.mode.toJS
+    ..['height'] = st.height.toJS
     ..['ink'] = rgba(st.ink).toJS
     ..['band'] = rgba(st.band).toJS
     ..['padX'] = st.padX.toJS
     ..['padY'] = st.padY.toJS
     ..['radius'] = st.radius.toJS
     ..['seam'] = st.seam.toJS
-    ..['transitionMs'] = st.ms.toJS
+    ..['ms'] = st.ms.toJS
     ..['layer'] = st.layer.toJS;
 
   JSObject _specToJs(QvpLayoutSpec spec) {
@@ -267,6 +208,17 @@ class QvpWebBackend implements QvpBackend {
     return s;
   }
 
+  JSObject _passageSpecToJs(QvpPassageSpec s) => JSObject()
+    ..['width'] = s.width.toJS
+    ..['scale'] = s.scale.toJS
+    ..['lineSpacing'] = s.lineSpacing.toJS
+    ..['padding'] = s.padding.toJS
+    ..['align'] = s.align.name.toJS
+    ..['maxRows'] = s.maxRows.toJS
+    ..['keepAyahMark'] = s.keepAyahMark.toJS
+    ..['ellipsisWidth'] = s.ellipsisWidth.toJS
+    ..['maxStretch'] = s.maxStretch.toJS;
+
   QvpHit? _readHit(JSObject? res) {
     if (res == null) return null;
     final w = (res['word'] as JSNumber).toDartInt;
@@ -279,6 +231,85 @@ class QvpWebBackend implements QvpBackend {
       isExact: (res['isExact'] as JSBoolean).toDart,
     );
   }
+
+  JSObject _zoomToJs(QvpZoom z) => JSObject()
+    ..['mode'] = z.mode.name.toJS
+    ..['step'] = z.step.toJS
+    ..['zoom'] = z.zoom.toJS;
+
+  QvpZoom _jsToZoom(JSObject z) => QvpZoom(
+    mode: QvpZoomMode.values.byName((z['mode'] as JSString).toDart),
+    step: (z['step'] as JSNumber).toDartInt,
+    zoom: (z['zoom'] as JSNumber).toDartDouble,
+  );
+
+  JSObject _viewToJs(QvpView v) => JSObject()
+    ..['scale'] = v.scale.toJS
+    ..['offsetX'] = v.offsetX.toJS
+    ..['offsetY'] = v.offsetY.toJS;
+
+  QvpView _jsToView(JSObject v) => QvpView(
+    scale: (v['scale'] as JSNumber).toDartDouble,
+    offsetX: (v['offsetX'] as JSNumber).toDartDouble,
+    offsetY: (v['offsetY'] as JSNumber).toDartDouble,
+  );
+
+  QvpZoomChange _jsToZoomChange(JSObject c) => QvpZoomChange(
+    zoom: _jsToZoom(c['zoom'] as JSObject),
+    view: _jsToView(c['view'] as JSObject),
+    relaid: (c['relaid'] as JSBoolean).toDart,
+  );
+
+  QvpLayout _readLayoutObject(JSObject res) {
+    final lineDyJs = res['lineDy'] as JSFloat32Array?;
+    final lineDy = lineDyJs != null ? lineDyJs.toDart : Float32List(0);
+    final rowsNum = res['rows'] as JSNumber?;
+    final rows = rowsNum != null ? rowsNum.toDartInt : 0;
+    final slotsJs = res['slots'] as JSArray?;
+    final slots = <(double, double)>[];
+    if (slotsJs != null) {
+      for (var i = 0; i < slotsJs.length; i++) {
+        final s = slotsJs[i] as JSArray;
+        slots.add(((s[0] as JSNumber).toDartDouble, (s[1] as JSNumber).toDartDouble));
+      }
+    }
+    return QvpLayout(
+      scale: (res['scale'] as JSNumber).toDartDouble,
+      offsetX: (res['offsetX'] as JSNumber).toDartDouble,
+      offsetY: (res['offsetY'] as JSNumber).toDartDouble,
+      contentW: (res['contentW'] as JSNumber).toDartDouble,
+      contentH: (res['contentH'] as JSNumber).toDartDouble,
+      lineSpacing: (res['lineSpacing'] as JSNumber).toDartDouble,
+      lineDy: lineDy,
+      slots: slots,
+      fitScale: (res['fitScale'] as JSNumber).toDartDouble,
+      fitX: (res['fitX'] as JSNumber).toDartDouble,
+      fitY: (res['fitY'] as JSNumber).toDartDouble,
+      reflowed: (res['reflowed'] as JSBoolean).toDart,
+      rows: rows,
+    );
+  }
+
+  static JSAny? _ornamentSpecToJs(Object? v) {
+    if (v == null) return null;
+    if (v is int) return v.toJS;
+    if (v is String) return v.toJS;
+    if (v is QvpOrnament) return v.index.toJS;
+    throw ArgumentError.value(v, 'ornament', 'Must be an ornament, its index or a style name');
+  }
+
+  static QvpOrnamentKind _kindFromName(String name) => switch (name) {
+    'ayah_mark' => QvpOrnamentKind.ayahMark,
+    'surah_header' => QvpOrnamentKind.surahHeader,
+    'page_frame' => QvpOrnamentKind.pageFrame,
+    _ => throw ArgumentError.value(name, 'name', 'Unknown ornament kind'),
+  };
+
+  static QvpLineage _lineageFromName(String name) => switch (name) {
+    'scan' => QvpLineage.scan,
+    'font' => QvpLineage.font,
+    _ => throw ArgumentError.value(name, 'name', 'Unknown lineage'),
+  };
 
   // ── Engine Info ──
 
@@ -329,7 +360,7 @@ class QvpWebBackend implements QvpBackend {
 
   @override
   String arabic(int op, String s) =>
-      (js.callMethod<JSString>('arabic'.toJS, op.toJS, s.toJS)).toDart;
+      (js.callMethod<JSString>('_arabic'.toJS, op.toJS, s.toJS)).toDart;
 
   @override
   QvpView viewZoomAbout(QvpView view, double focalX, double focalY, double factor, {double min = 0, double max = 0}) {
@@ -473,8 +504,10 @@ class QvpWebBackend implements QvpBackend {
   // ── Page text & query ──
 
   @override
-  String wordForm(PageHandle handle, int wordIndex, int form) =>
-      (_page(handle).callMethod<JSString>('wordForm'.toJS, wordIndex.toJS, form.toJS)).toDart;
+  String wordForm(PageHandle handle, int wordIndex, int form) {
+    final formName = _formNames[form.clamp(0, _formNames.length - 1)];
+    return (_page(handle).callMethod<JSString>('wordForm'.toJS, wordIndex.toJS, formName.toJS)).toDart;
+  }
 
   @override
   int findWord(PageHandle handle, int surah, int ayah, int word) =>
@@ -482,8 +515,8 @@ class QvpWebBackend implements QvpBackend {
 
   @override
   List<int> targetWords(PageHandle handle, QvpTarget target) {
-    final res = _page(handle).callMethod<JSUint32Array>('targetWords'.toJS, _targetToJs(target));
-    return res.toDart.toList();
+    final arr = _page(handle).callMethod<JSArray>('targetWords'.toJS, _targetToJs(target));
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
   }
 
   @override
@@ -523,7 +556,8 @@ class QvpWebBackend implements QvpBackend {
 
   @override
   List<QvpSurahHeader> surahHeaders(PageHandle handle, {required bool view}) {
-    final arr = _page(handle).callMethod<JSArray>('surahHeaders'.toJS, view.toJS);
+    final methodName = view ? 'surahHeadersView' : 'surahHeaders';
+    final arr = _page(handle).callMethod<JSArray>(methodName.toJS);
     return List<QvpSurahHeader>.generate(arr.length, (i) {
       final h = arr[i] as JSObject;
       return QvpSurahHeader(
@@ -597,21 +631,25 @@ class QvpWebBackend implements QvpBackend {
   List<(int, int)> ayahKeys(PageHandle handle) {
     final arr = _page(handle).callMethod<JSArray>('ayahKeys'.toJS);
     return List<(int, int)>.generate(arr.length, (i) {
-      final k = (arr[i] as JSNumber).toDartInt;
-      return (k >> 16, k & 0xffff);
+      final pair = arr[i] as JSArray;
+      return ((pair[0] as JSNumber).toDartInt, (pair[1] as JSNumber).toDartInt);
     }, growable: false);
   }
 
   @override
   ({int count, bool isComplete}) ayahWordCount(PageHandle handle, int surah, int ayah) {
-    final res = (_page(handle).callMethod<JSNumber>('ayahWordCount'.toJS, surah.toJS, ayah.toJS)).toDartInt;
-    return (count: res, isComplete: true);
+    final res = _page(handle).callMethod<JSObject>('ayahWordCount'.toJS, surah.toJS, ayah.toJS);
+    return (
+      count: (res['count'] as JSNumber).toDartInt,
+      isComplete: (res['isComplete'] as JSBoolean).toDart,
+    );
   }
 
   @override
   List<int>? reciteMap(PageHandle handle, int surah, int ayah, int nSegments) {
-    final res = _page(handle).callMethod<JSUint32Array>('reciteMap'.toJS, surah.toJS, ayah.toJS, nSegments.toJS);
-    return res.toDart.toList();
+    final arr = _page(handle).callMethod<JSArray?>('reciteMap'.toJS, surah.toJS, ayah.toJS, nSegments.toJS);
+    if (arr == null) return null;
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
   }
 
   @override
@@ -623,13 +661,18 @@ class QvpWebBackend implements QvpBackend {
       (_page(handle).callMethod<JSString>('ayahLabel'.toJS, ayahIndex.toJS)).toDart;
 
   @override
-  String text(PageHandle handle, QvpTarget target, int form, String wordSep, String lineSep) =>
-      (_page(handle).callMethod<JSString>('text'.toJS, _targetToJs(target), form.toJS)).toDart;
+  String text(PageHandle handle, QvpTarget target, int form, String wordSep, String lineSep) {
+    final opt = JSObject()
+      ..['form'] = _formNames[form.clamp(0, _formNames.length - 1)].toJS
+      ..['wordSep'] = wordSep.toJS
+      ..['lineSep'] = lineSep.toJS;
+    return (_page(handle).callMethod<JSString>('text'.toJS, _targetToJs(target), opt)).toDart;
+  }
 
   @override
   List<QvpMatch> search(PageHandle handle, String query, {int form = 4, String mode = 'includes', bool normalize = true, bool looseMatch = true, int limit = 0}) {
     final opt = JSObject()
-      ..['form'] = form.toJS
+      ..['form'] = _formNames[form.clamp(0, _formNames.length - 1)].toJS
       ..['mode'] = mode.toJS
       ..['normalize'] = normalize.toJS
       ..['looseMatch'] = looseMatch.toJS
@@ -654,8 +697,10 @@ class QvpWebBackend implements QvpBackend {
       (_page(handle).callMethod<JSNumber>('attachWords'.toJS, Uint8List.fromList(bytes).toJS)).toDartInt;
 
   @override
-  bool hasForm(PageHandle handle, int form) =>
-      (_page(handle).callMethod<JSBoolean>('hasForm'.toJS, form.toJS)).toDart;
+  bool hasForm(PageHandle handle, int form) {
+    final formName = _formNames[form.clamp(0, _formNames.length - 1)];
+    return (_page(handle).callMethod<JSBoolean>('hasForm'.toJS, formName.toJS)).toDart;
+  }
 
   // ── Hit testing ──
 
@@ -686,108 +731,263 @@ class QvpWebBackend implements QvpBackend {
   }
 
   @override
-  List<QvpLineBand> lineBands(PageHandle handle) => const [];
+  List<QvpLineBand> lineBands(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSArray>('lineBands'.toJS);
+    return List<QvpLineBand>.generate(arr.length, (i) {
+      final b = arr[i] as JSObject;
+      return QvpLineBand(
+        line: (b['line'] as JSNumber).toDartInt,
+        lineNumber: (b['lineNumber'] as JSNumber).toDartInt,
+        y0: (b['y0'] as JSNumber).toDartDouble,
+        y1: (b['y1'] as JSNumber).toDartDouble,
+        mid: (b['mid'] as JSNumber).toDartDouble,
+        inkY0: (b['inkY0'] as JSNumber).toDartDouble,
+        inkY1: (b['inkY1'] as JSNumber).toDartDouble,
+      );
+    }, growable: false);
+  }
 
   @override
-  List<QvpHitArea> hitAreas(PageHandle handle, double gapBias) => const [];
+  List<QvpHitArea> hitAreas(PageHandle handle, double gapBias) {
+    final arr = _page(handle).callMethod<JSArray>('hitAreas'.toJS, gapBias.toJS);
+    return List<QvpHitArea>.generate(arr.length, (i) {
+      final a = arr[i] as JSObject;
+      return QvpHitArea(
+        word: (a['word'] as JSNumber).toDartInt,
+        line: (a['line'] as JSNumber).toDartInt,
+        x0: (a['x0'] as JSNumber).toDartDouble,
+        y0: (a['y0'] as JSNumber).toDartDouble,
+        x1: (a['x1'] as JSNumber).toDartDouble,
+        y1: (a['y1'] as JSNumber).toDartDouble,
+        inkX0: (a['inkX0'] as JSNumber).toDartDouble,
+        inkY0: (a['inkY0'] as JSNumber).toDartDouble,
+        inkX1: (a['inkX1'] as JSNumber).toDartDouble,
+        inkY1: (a['inkY1'] as JSNumber).toDartDouble,
+      );
+    }, growable: false);
+  }
 
   // ── Layout & zoom ──
 
   @override
   QvpLayout layout(PageHandle handle, QvpLayoutSpec spec) {
     final res = _page(handle).callMethod<JSObject>('layout'.toJS, _specToJs(spec));
-    final nLines = (res['nLines'] as JSNumber).toDartInt;
-    final lineDyJs = res['lineDy'] as JSFloat32Array?;
-    final lineDy = lineDyJs != null ? lineDyJs.toDart : Float32List(nLines);
-    return QvpLayout(
-      scale: (res['scale'] as JSNumber).toDartDouble,
-      offsetX: (res['offsetX'] as JSNumber).toDartDouble,
-      offsetY: (res['offsetY'] as JSNumber).toDartDouble,
-      contentW: (res['contentW'] as JSNumber).toDartDouble,
-      contentH: (res['contentH'] as JSNumber).toDartDouble,
-      lineSpacing: (res['lineSpacing'] as JSNumber).toDartDouble,
-      lineDy: lineDy,
-      slots: const [],
-      fitScale: (res['fitScale'] as JSNumber).toDartDouble,
-      fitX: (res['fitX'] as JSNumber).toDartDouble,
-      fitY: (res['fitY'] as JSNumber).toDartDouble,
-      reflowed: (res['reflowed'] as JSBoolean).toDart,
-      rows: (res['nRows'] as JSNumber).toDartInt,
+    return _readLayoutObject(res);
+  }
+
+  @override
+  QvpZoomChange zoomPinch(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, QvpView view, double factor, double focalX, double focalY) {
+    final res = _page(handle).callMethodVarArgs<JSObject>(
+      'zoomPinch'.toJS,
+      [
+        _specToJs(spec),
+        _zoomToJs(zoom),
+        _viewToJs(view),
+        factor.toJS,
+        focalX.toJS,
+        focalY.toJS,
+      ],
+    );
+    return _jsToZoomChange(res);
+  }
+
+  @override
+  QvpZoomChange zoomToStep(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, int step, QvpView view) {
+    final res = _page(handle).callMethodVarArgs<JSObject>(
+      'zoomToStep'.toJS,
+      [
+        _specToJs(spec),
+        _zoomToJs(zoom),
+        step.toJS,
+        _viewToJs(view),
+      ],
+    );
+    return _jsToZoomChange(res);
+  }
+
+  @override
+  QvpZoom zoomMode(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, QvpZoomMode mode) {
+    final res = _page(handle).callMethod<JSObject>(
+      'zoomMode'.toJS,
+      _specToJs(spec),
+      _zoomToJs(zoom),
+      mode.name.toJS,
+    );
+    return _jsToZoom(res);
+  }
+
+  @override
+  QvpLayoutSpec zoomSpec(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom) {
+    final s = _page(handle).callMethod<JSObject>(
+      'zoomSpec'.toJS,
+      _specToJs(spec),
+      _zoomToJs(zoom),
+    );
+    final r = s['reflow'] as JSObject?;
+    final knobs = spec.reflow ?? const QvpReflowSpec();
+    final zNum = r != null ? (r['zoom'] as JSNumber?)?.toDartDouble ?? 0.0 : 0.0;
+    final zoomed = zNum > 1.0001;
+    return spec.copyWith(
+      reflow: zoomed || spec.reflow != null
+          ? QvpReflowSpec(
+              zoom: zoomed ? zNum : 0,
+              fill: knobs.fill,
+              breaks: knobs.breaks,
+              gaps: knobs.gaps,
+              wordGap: knobs.wordGap,
+              maxStretch: knobs.maxStretch,
+              relax: knobs.relax,
+            )
+          : null,
     );
   }
 
   @override
-  QvpZoomChange zoomPinch(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, QvpView view, double factor, double focalX, double focalY) =>
-      QvpZoomChange(zoom: zoom, view: view, relaid: false);
+  QvpZoom zoomCarried(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom) {
+    final res = _page(handle).callMethod<JSObject>(
+      'zoomCarried'.toJS,
+      _specToJs(spec),
+      _zoomToJs(zoom),
+    );
+    return _jsToZoom(res);
+  }
 
   @override
-  QvpZoomChange zoomToStep(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, int step, QvpView view) =>
-      QvpZoomChange(zoom: zoom, view: view, relaid: false);
+  double zoomAtStep(PageHandle handle, QvpLayoutSpec spec, int step) =>
+      (_page(handle).callMethod<JSNumber>(
+        'zoomAtStep'.toJS,
+        _specToJs(spec),
+        step.toJS,
+      )).toDartDouble;
 
   @override
-  QvpZoom zoomMode(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, QvpZoomMode mode) => zoom;
+  Float32List zoomSteps(PageHandle handle, QvpLayoutSpec spec) {
+    final arr = _page(handle).callMethod<JSArray>(
+      'zoomSteps'.toJS,
+      _specToJs(spec),
+    );
+    final list = Float32List(arr.length);
+    for (var i = 0; i < arr.length; i++) {
+      list[i] = (arr[i] as JSNumber).toDartDouble;
+    }
+    return list;
+  }
 
   @override
-  QvpLayoutSpec zoomSpec(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom) => spec;
+  double reflowMaxZoom(PageHandle handle, QvpLayoutSpec spec) =>
+      (_page(handle).callMethod<JSNumber>(
+        'reflowMaxZoom'.toJS,
+        _specToJs(spec),
+      )).toDartDouble;
 
   @override
-  QvpZoom zoomCarried(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom) => zoom;
+  bool isZoomed(QvpZoom zoom, QvpView view, double fitScale) {
+    final fit = fitScale > 0.0 ? fitScale : 1.0;
+    const threshold = 1.02;
+    return view.scale > fit * threshold || zoom.zoom > threshold;
+  }
 
   @override
-  double zoomAtStep(PageHandle handle, QvpLayoutSpec spec, int step) => 0;
+  QvpSideways sidewaysDrag(PageHandle handle, QvpZoom zoom, QvpView view, double fitScale) {
+    final res = (_page(handle).callMethod<JSString>(
+      'sidewaysDrag'.toJS,
+      _zoomToJs(zoom),
+      _viewToJs(view),
+      fitScale.toJS,
+    )).toDart;
+    return res == 'turnPage' ? QvpSideways.turnPage : QvpSideways.pan;
+  }
 
   @override
-  Float32List zoomSteps(PageHandle handle, QvpLayoutSpec spec) => Float32List(0);
+  List<QvpDraw> layoutDrawList(PageHandle handle, {double bandTop = 0, double bandBottom = 0}) {
+    final arr = _page(handle).callMethod<JSUint32Array>('layoutDrawList'.toJS, bandTop.toJS, bandBottom.toJS);
+    final list = arr.toDart;
+    final n = list.length ~/ 2;
+    return List<QvpDraw>.generate(n, (i) => QvpDraw(list[i * 2], list[i * 2 + 1]), growable: false);
+  }
 
   @override
-  double reflowMaxZoom(PageHandle handle, QvpLayoutSpec spec) => 1;
+  List<QvpPlacement> layoutPlacements(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSFloat32Array>('layoutPlacements'.toJS);
+    final list = arr.toDart;
+    final n = list.length ~/ 4;
+    return List<QvpPlacement>.generate(n, (i) {
+      final o = i * 4;
+      return QvpPlacement(list[o], list[o + 1], list[o + 2], list[o + 3]);
+    }, growable: false);
+  }
 
   @override
-  bool isZoomed(QvpZoom zoom, QvpView view, double fitScale) => false;
+  QvpLayout? readLayout(PageHandle handle) {
+    final res = _page(handle).callMethod<JSObject?>('layoutCurrent'.toJS);
+    return res != null ? _readLayoutObject(res) : null;
+  }
 
   @override
-  QvpSideways sidewaysDrag(PageHandle handle, QvpZoom zoom, QvpView view, double fitScale) => QvpSideways.pan;
+  int? layoutWordRow(PageHandle handle, int word) {
+    final res = _page(handle).callMethod<JSNumber?>('wordRow'.toJS, word.toJS);
+    return res?.toDartInt;
+  }
 
   @override
-  List<QvpDraw> layoutDrawList(PageHandle handle, {double bandTop = 0, double bandBottom = 0}) => const [];
+  Uint32List layoutRowWords(PageHandle handle, int row) {
+    final arr = _page(handle).callMethod<JSArray>('rowWords'.toJS, row.toJS);
+    final list = Uint32List(arr.length);
+    for (var i = 0; i < arr.length; i++) {
+      list[i] = (arr[i] as JSNumber).toDartInt;
+    }
+    return list;
+  }
 
   @override
-  List<QvpPlacement> layoutPlacements(PageHandle handle) => const [];
+  ({int lines, double lineSpacing}) pageGrid(PageHandle handle) {
+    final g = _page(handle)['grid'] as JSObject;
+    return (
+      lines: (g['lines'] as JSNumber).toDartInt,
+      lineSpacing: (g['lineSpacing'] as JSNumber).toDartDouble,
+    );
+  }
 
   @override
-  QvpLayout? readLayout(PageHandle handle) => null;
+  double layoutWastedFraction(PageHandle handle, QvpLayoutSpec spec) =>
+      (_page(handle).callMethod<JSNumber>('layoutWastedFraction'.toJS, _specToJs(spec))).toDartDouble;
 
   @override
-  int? layoutWordRow(PageHandle handle, int word) => null;
+  double layoutPrintedHeight(PageHandle handle, QvpLayoutSpec spec) =>
+      (_page(handle).callMethod<JSNumber>('layoutPrintedHeight'.toJS, _specToJs(spec))).toDartDouble;
 
   @override
-  Uint32List layoutRowWords(PageHandle handle, int row) => Uint32List(0);
+  double layoutLineSpacingToFill(PageHandle handle, QvpLayoutSpec spec, double max) =>
+      (_page(handle).callMethod<JSNumber>('layoutLineSpacingToFill'.toJS, _specToJs(spec), max.toJS)).toDartDouble;
 
   @override
-  ({int lines, double lineSpacing}) pageGrid(PageHandle handle) => (lines: 15, lineSpacing: 0);
-
-  @override
-  double layoutWastedFraction(PageHandle handle, QvpLayoutSpec spec) => 0;
-
-  @override
-  double layoutPrintedHeight(PageHandle handle, QvpLayoutSpec spec) => 0;
-
-  @override
-  double layoutLineSpacingToFill(PageHandle handle, QvpLayoutSpec spec, double max) => 0;
-
-  @override
-  ({double x0, double y0, double x1, double y1}) wordBoundsView(PageHandle handle, int wordIndex) =>
-      (x0: 0, y0: 0, x1: 0, y1: 0);
+  ({double x0, double y0, double x1, double y1}) wordBoundsView(PageHandle handle, int wordIndex) {
+    final b = _page(handle).callMethod<JSObject>('wordBoundsView'.toJS, wordIndex.toJS);
+    return (
+      x0: (b['x0'] as JSNumber).toDartDouble,
+      y0: (b['y0'] as JSNumber).toDartDouble,
+      x1: (b['x1'] as JSNumber).toDartDouble,
+      y1: (b['y1'] as JSNumber).toDartDouble,
+    );
+  }
 
   // ── Styles ──
 
   @override
-  int style(PageHandle handle, QvpSelector sel, int color, {int ms = 0, int layer = 0}) =>
-      (_page(handle).callMethod<JSNumber>('style'.toJS, _selToJs(sel), color.toJS, ms.toJS, layer.toJS)).toDartInt;
+  int style(PageHandle handle, QvpSelector sel, int color, {int ms = 0, int layer = 0}) {
+    final opt = JSObject()
+      ..['ms'] = ms.toJS
+      ..['layer'] = layer.toJS;
+    return (_page(handle).callMethod<JSNumber>('style'.toJS, _selToJs(sel), color.toJS, opt)).toDartInt;
+  }
 
   @override
-  int styleTarget(PageHandle handle, QvpTarget target, int color, {int ms = 0, int layer = 0}) =>
-      (_page(handle).callMethod<JSNumber>('styleTarget'.toJS, _targetToJs(target), color.toJS, ms.toJS, layer.toJS)).toDartInt;
+  int styleTarget(PageHandle handle, QvpTarget target, int color, {int ms = 0, int layer = 0}) {
+    final opt = JSObject()
+      ..['ms'] = ms.toJS
+      ..['layer'] = layer.toJS;
+    return (_page(handle).callMethod<JSNumber>('styleTarget'.toJS, _targetToJs(target), color.toJS, opt)).toDartInt;
+  }
 
   @override
   int removeStyle(PageHandle handle, int styleHandle) =>
@@ -812,10 +1012,30 @@ class QvpWebBackend implements QvpBackend {
       _page(handle).callMethod('setDefaultColor'.toJS, color.toJS);
 
   @override
-  int theme(PageHandle handle, QvpTheme t) => 0;
+  int theme(PageHandle handle, QvpTheme t) {
+    final marksObj = JSObject();
+    for (final e in t.marks.entries) {
+      marksObj[e.key.toString()] = rgba(e.value).toJS;
+    }
+    final obj = JSObject()
+      ..['ink'] = (t.ink == null ? 0 : rgba(t.ink!)).toJS
+      ..['diacritics'] = (t.diacritics == null ? 0 : rgba(t.diacritics!)).toJS
+      ..['dots'] = (t.dots == null ? 0 : rgba(t.dots!)).toJS
+      ..['waqf'] = (t.waqf == null ? 0 : rgba(t.waqf!)).toJS
+      ..['sifr'] = (t.sifr == null ? 0 : rgba(t.sifr!)).toJS
+      ..['ayahMark'] = (t.ayahMark == null ? 0 : rgba(t.ayahMark!)).toJS
+      ..['numeral'] = (t.numeral == null ? 0 : rgba(t.numeral!)).toJS
+      ..['headers'] = (t.headers == null ? 0 : rgba(t.headers!)).toJS
+      ..['ms'] = t.ms.toJS
+      ..['marks'] = marksObj;
+    return (_page(handle).callMethod<JSNumber>('theme'.toJS, obj)).toDartInt;
+  }
 
   @override
-  List<int> styleHandles(PageHandle handle) => const [];
+  List<int> styleHandles(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSArray>('styleHandles'.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
+  }
 
   // ── Clock & display list ──
 
@@ -833,10 +1053,10 @@ class QvpWebBackend implements QvpBackend {
   List<QvpStyledPath> styledPaths(PageHandle handle) {
     final arr = _page(handle).callMethod<JSArray>('styledPaths'.toJS);
     return List<QvpStyledPath>.generate(arr.length, (i) {
-      final p = arr[i] as JSObject;
+      final pair = arr[i] as JSArray;
       return (
-        path: (p['path'] as JSNumber).toDartInt,
-        color: (p['color'] as JSNumber).toDartInt,
+        path: (pair[0] as JSNumber).toDartInt,
+        color: (pair[1] as JSNumber).toDartInt,
       );
     }, growable: false);
   }
@@ -867,10 +1087,16 @@ class QvpWebBackend implements QvpBackend {
   void clearHighlights(PageHandle handle) => _page(handle).callMethod('clearHighlights'.toJS);
 
   @override
-  List<int> highlightHandles(PageHandle handle) => const [];
+  List<int> highlightHandles(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSArray>('highlightHandles'.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
+  }
 
   @override
-  List<int> highlightWords(PageHandle handle, int highlightHandle) => const [];
+  List<int> highlightWords(PageHandle handle, int highlightHandle) {
+    final arr = _page(handle).callMethod<JSArray>('highlightWords'.toJS, highlightHandle.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
+  }
 
   @override
   List<QvpBox> highlightBoxesView(PageHandle handle) {
@@ -891,7 +1117,27 @@ class QvpWebBackend implements QvpBackend {
   }
 
   @override
-  List<QvpBox> wordBands(PageHandle handle, List<int> ws, {required bool inkHeight, required double padX, required double padY}) => const [];
+  List<QvpBox> wordBands(PageHandle handle, List<int> ws, {required bool inkHeight, required double padX, required double padY}) {
+    final opt = JSObject()
+      ..['height'] = (inkHeight ? 'ink' : 'lineSpacing').toJS
+      ..['padX'] = padX.toJS
+      ..['padY'] = padY.toJS;
+    final wordsJs = Uint32List.fromList(ws).toJS;
+    final arr = _page(handle).callMethod<JSArray>('wordBands'.toJS, wordsJs, opt);
+    return List<QvpBox>.generate(arr.length, (i) {
+      final b = arr[i] as JSObject;
+      return QvpBox(
+        id: (b['id'] as JSNumber).toDartInt,
+        line: (b['line'] as JSNumber).toDartInt,
+        x0: (b['x0'] as JSNumber).toDartDouble,
+        y0: (b['y0'] as JSNumber).toDartDouble,
+        x1: (b['x1'] as JSNumber).toDartDouble,
+        y1: (b['y1'] as JSNumber).toDartDouble,
+        color: (b['color'] as JSNumber).toDartInt,
+        radius: (b['radius'] as JSNumber).toDartDouble,
+      );
+    }, growable: false);
+  }
 
   // ── Selection ──
 
@@ -901,27 +1147,40 @@ class QvpWebBackend implements QvpBackend {
 
   @override
   List<int> selection(PageHandle handle) {
-    final res = _page(handle).callMethod<JSUint32Array>('selection'.toJS);
-    return res.toDart.toList();
+    final arr = _page(handle).callMethod<JSArray>('selection'.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
   }
 
   @override
-  String selectionText(PageHandle handle, int form, bool includeCitation) =>
-      (_page(handle).callMethod<JSString>('selectionText'.toJS, form.toJS, includeCitation.toJS)).toDart;
+  String selectionText(PageHandle handle, int form, bool includeCitation) {
+    final formName = _formNames[form.clamp(0, _formNames.length - 1)];
+    return (_page(handle).callMethod<JSString>('selectionText'.toJS, formName.toJS, includeCitation.toJS)).toDart;
+  }
 
   // ── Masks & memorisation ──
 
   @override
-  void mask(PageHandle handle, QvpTarget target, int mode) =>
-      _page(handle).callMethod('mask'.toJS, _targetToJs(target), mode.toJS);
+  void mask(PageHandle handle, QvpTarget target, int mode) {
+    final modeName = _maskModeNames[mode.clamp(0, 2)];
+    _page(handle).callMethod('mask'.toJS, _targetToJs(target), modeName.toJS);
+  }
 
   @override
-  void maskFrom(PageHandle handle, int wordIndex, int mode) =>
-      _page(handle).callMethod('maskFrom'.toJS, wordIndex.toJS, mode.toJS);
+  void maskFrom(PageHandle handle, int wordIndex, int mode) {
+    final modeName = _maskModeNames[mode.clamp(0, 2)];
+    _page(handle).callMethod('maskFrom'.toJS, wordIndex.toJS, modeName.toJS);
+  }
 
   @override
-  void maskOptions(PageHandle handle, int blockColor, double padX, double padY, double radius, bool reverse) =>
-      _page(handle).callMethodVarArgs('maskOptions'.toJS, [blockColor.toJS, padX.toJS, padY.toJS, radius.toJS, reverse.toJS]);
+  void maskOptions(PageHandle handle, int blockColor, double padX, double padY, double radius, bool reverse) {
+    final opt = JSObject()
+      ..['blockColor'] = blockColor.toJS
+      ..['padX'] = padX.toJS
+      ..['padY'] = padY.toJS
+      ..['radius'] = radius.toJS
+      ..['reverse'] = reverse.toJS;
+    _page(handle).callMethod('maskOptions'.toJS, opt);
+  }
 
   @override
   int unmaskNext(PageHandle handle, int n) =>
@@ -949,10 +1208,16 @@ class QvpWebBackend implements QvpBackend {
   void unmask(PageHandle handle) => _page(handle).callMethod('unmask'.toJS);
 
   @override
-  List<int> maskHidden(PageHandle handle) => const [];
+  List<int> maskHidden(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSArray>('maskHidden'.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
+  }
 
   @override
-  List<int> maskWords(PageHandle handle) => const [];
+  List<int> maskWords(PageHandle handle) {
+    final arr = _page(handle).callMethod<JSArray>('maskWords'.toJS);
+    return List<int>.generate(arr.length, (i) => (arr[i] as JSNumber).toDartInt, growable: false);
+  }
 
   @override
   List<QvpBox> maskBoxesView(PageHandle handle) {
@@ -975,96 +1240,318 @@ class QvpWebBackend implements QvpBackend {
   // ── Reveal ──
 
   @override
-  int revealStart(PageHandle handle, {required int lit, required bool byAyah, required int grey, required int ink, required bool ayahMarks, required int ms}) => 0;
+  int revealStart(PageHandle handle, {required int lit, required bool byAyah, required int grey, required int ink, required bool ayahMarks, required int ms}) {
+    final opt = JSObject()
+      ..['lit'] = lit.toJS
+      ..['byAyah'] = byAyah.toJS
+      ..['grey'] = grey.toJS
+      ..['ink'] = ink.toJS
+      ..['ayahMarks'] = ayahMarks.toJS
+      ..['ms'] = ms.toJS;
+    return (_page(handle).callMethod<JSNumber>('revealStart'.toJS, opt)).toDartInt;
+  }
 
   @override
-  bool revealGoto(PageHandle handle, int at) => false;
+  bool revealGoto(PageHandle handle, int at) =>
+      (_page(handle).callMethod<JSBoolean>('revealGoto'.toJS, at.toJS)).toDart;
 
   @override
-  int? revealPosition(PageHandle handle) => null;
+  int? revealPosition(PageHandle handle) {
+    final res = _page(handle).callMethod<JSNumber?>('revealPosition'.toJS);
+    return res?.toDartInt;
+  }
 
   @override
-  int revealStepCount(PageHandle handle) => 0;
+  int revealStepCount(PageHandle handle) =>
+      (_page(handle).callMethod<JSNumber>('revealStepCount'.toJS)).toDartInt;
 
   @override
-  int revealStepOf(PageHandle handle, int wordIndex) => 0;
+  int revealStepOf(PageHandle handle, int wordIndex) =>
+      (_page(handle).callMethod<JSNumber>('revealStepOf'.toJS, wordIndex.toJS)).toDartInt;
 
   @override
-  void revealStop(PageHandle handle) {}
+  void revealStop(PageHandle handle) => _page(handle).callMethod('revealStop'.toJS);
 
   // ── Dress ──
 
   @override
-  bool dress(PageHandle page, OrnamentsHandle set, QvpDressSpec spec) => false;
+  bool dress(PageHandle page, OrnamentsHandle set, QvpDressSpec spec) {
+    final lineArtJs = [
+      for (final k in spec.lineArt)
+        (switch (k) {
+          QvpOrnamentKind.ayahMark => 'ayah_mark',
+          QvpOrnamentKind.surahHeader => 'surah_header',
+          QvpOrnamentKind.pageFrame => 'page_frame',
+        }).toJS
+    ].toJS;
+
+    final opt = JSObject()
+      ..['gap'] = spec.gap.toJS
+      ..['bandGap'] = spec.bandGap.toJS
+      ..['ayahMarkScale'] = spec.ayahMarkScale.toJS
+      ..['pageFrameScale'] = spec.pageFrameScale.toJS
+      ..['lineArt'] = lineArtJs;
+
+    if (spec.style != null) opt['style'] = spec.style!.toJS;
+    final ayahVal = _ornamentSpecToJs(spec.ayahMark);
+    if (ayahVal != null) opt['ayahMark'] = ayahVal;
+    final headerVal = _ornamentSpecToJs(spec.surahHeader);
+    if (headerVal != null) opt['surahHeader'] = headerVal;
+    final frameVal = _ornamentSpecToJs(spec.pageFrame);
+    if (frameVal != null) opt['pageFrame'] = frameVal;
+
+    final res = _page(page).callMethod<JSObject?>('dress'.toJS, _ornaments(set), opt);
+    return res != null;
+  }
 
   @override
-  void undress(PageHandle page) {}
+  void undress(PageHandle page) => _page(page).callMethod('undress'.toJS);
 
   @override
-  QvpView dressClamp(PageHandle page, QvpView view, double viewportW, double viewportH) => view;
+  QvpView dressClamp(PageHandle page, QvpView view, double viewportW, double viewportH) {
+    final res = _page(page).callMethod<JSObject>('dressClamp'.toJS, _viewToJs(view), viewportW.toJS, viewportH.toJS);
+    return _jsToView(res);
+  }
 
   @override
-  QvpDressView dressView(PageHandle page, double scale, double viewportW) =>
-      QvpDressView(view: const QvpView(), width: 0, height: 0);
+  QvpDressView dressView(PageHandle page, double scale, double viewportW) {
+    final res = _page(page).callMethod<JSObject>('dressView'.toJS, scale.toJS, viewportW.toJS);
+    return QvpDressView(
+      view: _jsToView(res['view'] as JSObject),
+      width: (res['width'] as JSNumber).toDartDouble,
+      height: (res['height'] as JSNumber).toDartDouble,
+    );
+  }
 
   @override
-  QvpDressInfo? dressInfo(PageHandle page) => null;
+  QvpDressInfo? dressInfo(PageHandle page) {
+    final info = _page(page).callMethod<JSObject?>('dressInfo'.toJS);
+    if (info == null) return null;
+    final vb = info['viewBox'] as JSArray;
+    final of = info['overflow'] as JSArray;
+    return QvpDressInfo(
+      ayahMark: (info['ayahMark'] as JSNumber?)?.toDartInt,
+      surahHeader: (info['surahHeader'] as JSNumber?)?.toDartInt,
+      pageFrame: (info['pageFrame'] as JSNumber?)?.toDartInt,
+      ayahMarks: (info['ayahMarks'] as JSNumber).toDartInt,
+      surahHeaders: (info['surahHeaders'] as JSNumber).toDartInt,
+      frameRepeats: (info['frameRepeats'] as JSNumber).toDartInt,
+      frameStretched: (info['frameStretched'] as JSBoolean).toDart,
+      draws: (info['draws'] as JSNumber).toDartInt,
+      revision: (info['revision'] as JSNumber).toDartInt,
+      viewBox: [
+        (vb[0] as JSNumber).toDartDouble,
+        (vb[1] as JSNumber).toDartDouble,
+        (vb[2] as JSNumber).toDartDouble,
+        (vb[3] as JSNumber).toDartDouble,
+      ],
+      overflow: [
+        (of[0] as JSNumber).toDartDouble,
+        (of[1] as JSNumber).toDartDouble,
+        (of[2] as JSNumber).toDartDouble,
+        (of[3] as JSNumber).toDartDouble,
+      ],
+    );
+  }
 
   @override
-  List<QvpDressDraw> dressGeometry(PageHandle page) => const [];
+  List<QvpDressDraw> dressGeometry(PageHandle page) {
+    final p = _page(page);
+    final engine = p['e'] as JSObject;
+    final ex = engine['ex'] as JSObject;
+    final scratch = (engine['scratch'] as JSNumber).toDartInt;
+    final h = (p['h'] as JSNumber).toDartInt;
+    ex.callMethod('qvp_dress_geometry'.toJS, h.toJS, scratch.toJS);
+
+    final dv = engine.callMethod<JSObject>('dv'.toJS);
+    final n = (dv.callMethod<JSNumber>('getUint32'.toJS, (scratch + 20).toJS, true.toJS)).toDartInt;
+    if (n == 0) return const [];
+
+    final opsPtr = (dv.callMethod<JSNumber>('getUint32'.toJS, scratch.toJS, true.toJS)).toDartInt;
+    final opsLen = (dv.callMethod<JSNumber>('getUint32'.toJS, (scratch + 4).toJS, true.toJS)).toDartInt;
+    final ptsPtr = (dv.callMethod<JSNumber>('getUint32'.toJS, (scratch + 8).toJS, true.toJS)).toDartInt;
+    final ptsLen = (dv.callMethod<JSNumber>('getUint32'.toJS, (scratch + 12).toJS, true.toJS)).toDartInt;
+    final tabPtr = (dv.callMethod<JSNumber>('getUint32'.toJS, (scratch + 16).toJS, true.toJS)).toDartInt;
+
+    final mem = engine['mem'] as JSObject;
+    final buffer = mem['buffer'] as JSArrayBuffer;
+
+    final u8Class = globalContext['Uint8Array'] as JSFunction;
+    final f32Class = globalContext['Float32Array'] as JSFunction;
+    final u32Class = globalContext['Uint32Array'] as JSFunction;
+
+    final opsArr = (u8Class.callAsConstructor<JSUint8Array>(buffer, opsPtr.toJS, opsLen.toJS)).toDart;
+    final ptsArr = (f32Class.callAsConstructor<JSFloat32Array>(buffer, ptsPtr.toJS, ptsLen.toJS)).toDart;
+    final tabArr = (u32Class.callAsConstructor<JSUint32Array>(buffer, tabPtr.toJS, (n * 9).toJS)).toDart;
+    final tf = tabArr.buffer.asFloat32List(tabArr.offsetInBytes, n * 9);
+
+    return List<QvpDressDraw>.generate(n, (i) {
+      final flags = tabArr[i * 9 + 5];
+      final placement = tabArr[i * 9 + 8];
+      final evenOdd = flags & 0x100 != 0;
+      final path = Path()..fillType = evenOdd ? PathFillType.evenOdd : PathFillType.nonZero;
+      var o = tabArr[i * 9];
+      final oe = o + tabArr[i * 9 + 1];
+      var k = tabArr[i * 9 + 2];
+      for (; o < oe; o++) {
+        switch (opsArr[o]) {
+          case QvpOp.moveTo:
+            path.moveTo(ptsArr[k], ptsArr[k + 1]);
+            k += 2;
+          case QvpOp.lineTo:
+            path.lineTo(ptsArr[k], ptsArr[k + 1]);
+            k += 2;
+          case QvpOp.quadTo:
+            path.quadraticBezierTo(ptsArr[k], ptsArr[k + 1], ptsArr[k + 2], ptsArr[k + 3]);
+            k += 4;
+          case QvpOp.cubicTo:
+            path.cubicTo(ptsArr[k], ptsArr[k + 1], ptsArr[k + 2], ptsArr[k + 3], ptsArr[k + 4], ptsArr[k + 5]);
+            k += 6;
+          case QvpOp.close:
+            path.close();
+        }
+      }
+      final stroke = flags & 0x200 != 0;
+      final strokeWidth = tf[i * 9 + 6];
+      final kind = QvpOrnamentKind.values[flags & 0xff];
+      final part = tabArr[i * 9 + 7];
+      return QvpDressDraw(
+        path: path,
+        color: tabArr[i * 9 + 4],
+        kind: kind,
+        evenOdd: evenOdd,
+        stroke: stroke,
+        strokeWidth: strokeWidth,
+        part: part,
+        placement: placement == qvpNone ? null : placement,
+      );
+    }, growable: false);
+  }
 
   // ── Crop ──
 
   @override
-  QvpCropBounds? cropBounds(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks}) => null;
+  QvpCropBounds? cropBounds(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks}) {
+    final opt = JSObject()
+      ..['pad'] = pad.toJS
+      ..['keepAyahMarks'] = keepAyahMarks.toJS;
+    final res = _page(handle).callMethod<JSObject?>('cropBounds'.toJS, _targetToJs(target), opt);
+    if (res == null) return null;
+    return QvpCropBounds(
+      x0: (res['x0'] as JSNumber).toDartDouble,
+      y0: (res['y0'] as JSNumber).toDartDouble,
+      x1: (res['x1'] as JSNumber).toDartDouble,
+      y1: (res['y1'] as JSNumber).toDartDouble,
+      nWords: (res['nWords'] as JSNumber).toDartInt,
+      ayahMarkDecoration: (res['ayahMarkDecoration'] as JSNumber).toDartInt,
+    );
+  }
 
   @override
-  String? cropSvg(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks, int? background}) =>
-      (_page(handle).callMethod<JSString>('cropSvg'.toJS, _targetToJs(target), pad.toJS)).toDart;
+  String? cropSvg(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks, int? background}) {
+    final opt = JSObject()
+      ..['pad'] = pad.toJS
+      ..['keepAyahMarks'] = keepAyahMarks.toJS;
+    if (background != null) opt['background'] = background.toJS;
+    final res = _page(handle).callMethod<JSString?>('cropSvg'.toJS, _targetToJs(target), opt);
+    return res?.toDart;
+  }
 
   // ── Atlas ──
 
   @override
   (AtlasHandle, int pageCount) atlasLoad(Uint8List bytes) {
     final jsAtlas = js.callMethod<JSObject>('loadAtlas'.toJS, bytes.toJS);
-    return (WebAtlasHandle(jsAtlas), 604);
+    final count = (jsAtlas.callMethod<JSNumber>('pageCount'.toJS)).toDartInt;
+    return (WebAtlasHandle(jsAtlas), count);
   }
 
   @override
-  void atlasFree(AtlasHandle handle) {}
+  void atlasFree(AtlasHandle handle) {
+    _atlas(handle).callMethod('free'.toJS);
+  }
 
   @override
   int? atlasPageOf(AtlasHandle handle, int surah, int ayah) {
-    final res = (_atlas(handle).callMethod<JSNumber>('pageOf'.toJS, surah.toJS, ayah.toJS)).toDartInt;
-    return res <= 0 ? null : res;
+    final res = _atlas(handle).callMethod<JSNumber?>('pageOf'.toJS, surah.toJS, ayah.toJS);
+    if (res == null) return null;
+    final p = res.toDartInt;
+    return p <= 0 ? null : p;
   }
 
   @override
-  ({(int, int) first, (int, int) last})? atlasPageRange(AtlasHandle handle, int page) => null;
+  ({(int, int) first, (int, int) last})? atlasPageRange(AtlasHandle handle, int page) {
+    final res = _atlas(handle).callMethod<JSObject?>('pageRange'.toJS, page.toJS);
+    if (res == null) return null;
+    final first = res['first'] as JSArray;
+    final last = res['last'] as JSArray;
+    return (
+      first: ((first[0] as JSNumber).toDartInt, (first[1] as JSNumber).toDartInt),
+      last: ((last[0] as JSNumber).toDartInt, (last[1] as JSNumber).toDartInt),
+    );
+  }
+
+  QvpAtlasSurah _readAtlasSurah(JSObject s) => QvpAtlasSurah(
+    number: (s['number'] as JSNumber).toDartInt,
+    page: (s['page'] as JSNumber).toDartInt,
+    ayahCount: (s['ayahCount'] as JSNumber).toDartInt,
+    place: (s['place'] as JSString).toDart,
+    arabic: (s['arabic'] as JSString).toDart,
+    latin: (s['latin'] as JSString).toDart,
+    english: (s['english'] as JSString).toDart,
+  );
 
   @override
-  QvpAtlasSurah? atlasSurah(AtlasHandle handle, int n) => null;
+  QvpAtlasSurah? atlasSurah(AtlasHandle handle, int n) {
+    final res = _atlas(handle).callMethod<JSObject?>('surah'.toJS, n.toJS);
+    return res != null ? _readAtlasSurah(res) : null;
+  }
 
   @override
-  List<QvpAtlasSurah> atlasSurahs(AtlasHandle handle) => const [];
+  List<QvpAtlasSurah> atlasSurahs(AtlasHandle handle) {
+    final arr = _atlas(handle).callMethod<JSArray>('surahs'.toJS);
+    return List<QvpAtlasSurah>.generate(arr.length, (i) => _readAtlasSurah(arr[i] as JSObject), growable: false);
+  }
 
   @override
-  QvpAtlasRubuAlHizb? atlasDivision(AtlasHandle handle, int division, int n) => null;
+  QvpAtlasRubuAlHizb? atlasDivision(AtlasHandle handle, int division, int n) {
+    final kind = _divKindNames[division] ?? 'rubu_al_hizb';
+    final res = _atlas(handle).callMethod<JSObject?>('division'.toJS, kind.toJS, n.toJS);
+    if (res == null) return null;
+    return QvpAtlasRubuAlHizb(
+      rubuAlHizb: (res['rubuAlHizb'] as JSNumber).toDartInt,
+      surah: (res['surah'] as JSNumber).toDartInt,
+      ayah: (res['ayah'] as JSNumber).toDartInt,
+      page: (res['page'] as JSNumber).toDartInt,
+    );
+  }
 
   @override
-  int? atlasDivisionOf(AtlasHandle handle, int division, int surah, int ayah) => null;
+  int? atlasDivisionOf(AtlasHandle handle, int division, int surah, int ayah) {
+    final kind = _divKindNames[division] ?? 'rubu_al_hizb';
+    final res = _atlas(handle).callMethod<JSNumber?>('divisionOf'.toJS, kind.toJS, surah.toJS, ayah.toJS);
+    return res?.toDartInt;
+  }
 
   @override
   List<int>? atlasPagesOfJuz(AtlasHandle handle, int n) {
-    final arr = _atlas(handle).callMethod<JSArray>('pagesOfJuz'.toJS, n.toJS);
+    final arr = _atlas(handle).callMethod<JSArray?>('pagesOfJuz'.toJS, n.toJS);
+    if (arr == null) return null;
     return [(arr[0] as JSNumber).toDartInt, (arr[1] as JSNumber).toDartInt];
   }
 
   @override
-  List<int> atlasSearchSurahs(AtlasHandle handle, String text) => const [];
+  List<int> atlasSearchSurahs(AtlasHandle handle, String text) {
+    final arr = _atlas(handle).callMethod<JSArray>('searchSurahs'.toJS, text.toJS);
+    return List<int>.generate(arr.length, (i) {
+      final s = arr[i] as JSObject;
+      return (s['number'] as JSNumber).toDartInt;
+    }, growable: false);
+  }
 
   @override
-  String atlasJson(AtlasHandle handle) => '';
+  String atlasJson(AtlasHandle handle) =>
+      (_atlas(handle).callMethod<JSString>('json'.toJS)).toDart;
 
   // ── Passage ──
 
@@ -1072,14 +1559,34 @@ class QvpWebBackend implements QvpBackend {
   (PassageHandle, List<QvpPassageText> ayahs, double lineSpacing) passageLoad(List<PageHandle> pages, int surah, int from, int to) {
     final jsPages = [for (final p in pages) _page(p)].toJS;
     final jsPassage = js.callMethod<JSObject>('loadPassage'.toJS, jsPages, surah.toJS, from.toJS, to.toJS);
-    return (WebPassageHandle(jsPassage), const [], 0);
+    final arr = jsPassage['ayahs'] as JSArray;
+    final ayahs = List<QvpPassageText>.generate(arr.length, (i) {
+      final a = arr[i] as JSObject;
+      return QvpPassageText(
+        surah: (a['surah'] as JSNumber).toDartInt,
+        ayah: (a['ayah'] as JSNumber).toDartInt,
+        text: (a['text'] as JSString).toDart,
+      );
+    });
+    final ls = (jsPassage['lineSpacing'] as JSNumber).toDartDouble;
+    return (WebPassageHandle(jsPassage), ayahs, ls);
   }
 
   @override
   (PassageHandle, List<QvpPassageText> ayahs, double lineSpacing) passageLoadBasmalah(List<PageHandle> pages, int surah) {
     final jsPages = [for (final p in pages) _page(p)].toJS;
     final jsPassage = js.callMethod<JSObject>('loadBasmalah'.toJS, jsPages, surah.toJS);
-    return (WebPassageHandle(jsPassage), const [], 0);
+    final arr = jsPassage['ayahs'] as JSArray;
+    final ayahs = List<QvpPassageText>.generate(arr.length, (i) {
+      final a = arr[i] as JSObject;
+      return QvpPassageText(
+        surah: (a['surah'] as JSNumber).toDartInt,
+        ayah: (a['ayah'] as JSNumber).toDartInt,
+        text: (a['text'] as JSString).toDart,
+      );
+    });
+    final ls = (jsPassage['lineSpacing'] as JSNumber).toDartDouble;
+    return (WebPassageHandle(jsPassage), ayahs, ls);
   }
 
   @override
@@ -1088,14 +1595,134 @@ class QvpWebBackend implements QvpBackend {
   }
 
   @override
-  QvpPassageLayout? passageLayout(PassageHandle handle, QvpPassageSpec spec) => null;
+  QvpPassageLayout? passageLayout(PassageHandle handle, QvpPassageSpec spec) {
+    final res = _passage(handle).callMethod<JSObject?>('layout'.toJS, _passageSpecToJs(spec));
+    if (res == null) return null;
+    final rowsJs = res['rows'] as JSArray;
+    final rows = List<QvpPassageRow>.generate(rowsJs.length, (i) {
+      final r = rowsJs[i] as JSObject;
+      return QvpPassageRow(
+        x0: (r['x0'] as JSNumber).toDartDouble,
+        y0: (r['y0'] as JSNumber).toDartDouble,
+        x1: (r['x1'] as JSNumber).toDartDouble,
+        y1: (r['y1'] as JSNumber).toDartDouble,
+        baseline: (r['baseline'] as JSNumber).toDartDouble,
+      );
+    });
+    final wordsJs = res['words'] as JSArray;
+    final words = List<QvpPassageWord>.generate(wordsJs.length, (i) {
+      final w = wordsJs[i] as JSObject;
+      return QvpPassageWord(
+        surah: (w['surah'] as JSNumber).toDartInt,
+        ayah: (w['ayah'] as JSNumber).toDartInt,
+        word: (w['word'] as JSNumber).toDartInt,
+        page: (w['page'] as JSNumber).toDartInt,
+        row: (w['row'] as JSNumber).toDartInt,
+        x0: (w['x0'] as JSNumber).toDartDouble,
+        y0: (w['y0'] as JSNumber).toDartDouble,
+        x1: (w['x1'] as JSNumber).toDartDouble,
+        y1: (w['y1'] as JSNumber).toDartDouble,
+        wordX0: (w['wordX0'] as JSNumber).toDartDouble,
+        wordY0: (w['wordY0'] as JSNumber).toDartDouble,
+        wordX1: (w['wordX1'] as JSNumber).toDartDouble,
+        wordY1: (w['wordY1'] as JSNumber).toDartDouble,
+      );
+    });
+    final ayahsJs = res['ayahs'] as JSArray;
+    final ayahs = List<QvpPassageAyah>.generate(ayahsJs.length, (i) {
+      final a = ayahsJs[i] as JSObject;
+      return QvpPassageAyah(
+        surah: (a['surah'] as JSNumber).toDartInt,
+        ayah: (a['ayah'] as JSNumber).toDartInt,
+        x0: (a['x0'] as JSNumber).toDartDouble,
+        y0: (a['y0'] as JSNumber).toDartDouble,
+        x1: (a['x1'] as JSNumber).toDartDouble,
+        y1: (a['y1'] as JSNumber).toDartDouble,
+      );
+    });
+    final drawsJs = res['draws'] as JSArray;
+    final draws = List<QvpPassageDraw>.generate(drawsJs.length, (i) {
+      final d = drawsJs[i] as JSObject;
+      return QvpPassageDraw(
+        (d['page'] as JSNumber).toDartInt,
+        (d['path'] as JSNumber).toDartInt,
+        (d['placement'] as JSNumber).toDartInt,
+      );
+    });
+    final placementsJs = res['placements'] as JSArray;
+    final placements = List<QvpPlacement>.generate(placementsJs.length, (i) {
+      final p = placementsJs[i] as JSObject;
+      return QvpPlacement(
+        (p['dx'] as JSNumber).toDartDouble,
+        (p['dy'] as JSNumber).toDartDouble,
+        (p['kx'] as JSNumber).toDartDouble,
+        (p['ky'] as JSNumber).toDartDouble,
+      );
+    });
+    final isTruncated = (res['isTruncated'] as JSBoolean).toDart;
+    final ellObj = res['ellipsis'] as JSObject?;
+    final ellipsis = ellObj != null
+        ? Rect.fromLTRB(
+            (ellObj['x0'] as JSNumber).toDartDouble,
+            (ellObj['y0'] as JSNumber).toDartDouble,
+            (ellObj['x1'] as JSNumber).toDartDouble,
+            (ellObj['y1'] as JSNumber).toDartDouble,
+          )
+        : null;
+
+    return QvpPassageLayout(
+      width: (res['width'] as JSNumber).toDartDouble,
+      height: (res['height'] as JSNumber).toDartDouble,
+      scale: (res['scale'] as JSNumber).toDartDouble,
+      lineSpacing: (res['lineSpacing'] as JSNumber).toDartDouble,
+      rows: rows,
+      words: words,
+      ayahs: ayahs,
+      draws: draws,
+      placements: placements,
+      isTruncated: isTruncated,
+      ellipsis: ellipsis,
+    );
+  }
 
   // ── Ornaments ──
 
   @override
   (OrnamentsHandle, List<QvpOrnament>) ornamentsLoad(Uint8List bytes) {
     final jsOrn = js.callMethod<JSObject>('loadOrnaments'.toJS, bytes.toJS);
-    return (WebOrnamentsHandle(jsOrn), const []);
+    final count = (jsOrn['count'] as JSNumber).toDartInt;
+    final listJs = jsOrn['list'] as JSArray;
+    final list = List<QvpOrnament>.generate(count, (i) {
+      final o = listJs[i] as JSObject;
+      final partsJs = o['parts'] as JSArray;
+      final parts = List<QvpOrnamentPart>.generate(partsJs.length, (k) {
+        final p = partsJs[k] as JSObject;
+        return QvpOrnamentPart(
+          index: (p['index'] as JSNumber).toDartInt,
+          color: (p['color'] as JSNumber).toDartInt,
+          stroke: (p['stroke'] as JSBoolean).toDart,
+          name: (p['name'] as JSString).toDart,
+        );
+      });
+      final lic = o['licence'] as JSObject;
+      final licence = QvpOrnamentLicence(
+        id: (lic['id'] as JSString).toDart,
+        status: (lic['status'] as JSString).toDart,
+        redistributable: (lic['redistributable'] as JSBoolean).toDart,
+        attribution: (lic['attribution'] as JSString).toDart,
+      );
+      return QvpOrnament(
+        index: (o['index'] as JSNumber).toDartInt,
+        kind: _kindFromName((o['kind'] as JSString).toDart),
+        lineage: _lineageFromName((o['lineage'] as JSString).toDart),
+        style: (o['style'] as JSString).toDart,
+        riwayah: (o['riwayah'] as JSString).toDart,
+        hasSlices: (o['hasSlices'] as JSBoolean).toDart,
+        licence: licence,
+        parts: parts,
+      );
+    });
+    return (WebOrnamentsHandle(jsOrn), list);
   }
 
   @override
@@ -1104,5 +1731,11 @@ class QvpWebBackend implements QvpBackend {
   }
 
   @override
-  int ornamentFind(OrnamentsHandle handle, int kind, String style) => qvpNone;
+  int ornamentFind(OrnamentsHandle handle, int kind, String style) {
+    const kinds = ['ayah_mark', 'surah_header', 'page_frame'];
+    final kStr = kinds[kind.clamp(0, 2)];
+    final res = _ornaments(handle).callMethod<JSObject?>('find'.toJS, kStr.toJS, style.toJS);
+    if (res == null) return qvpNone;
+    return (res['index'] as JSNumber).toDartInt;
+  }
 }

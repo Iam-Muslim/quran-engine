@@ -1162,4 +1162,9 @@ const ZOOM_MODE_NAME = ['stepped', 'continuous', 'magnify'];
   }
 
   global.QVP = { QvpEngine, QvpPage, QvpAtlas, QvpOrnaments, QvpPassage, CanvasRenderer, Sel, T, KIND, FAMILY, CATEGORY, DECORATION, FORM, LAYER, NAMES_TABLE, DEFAULTS, NONE, css, rgba, parseTarget };
+  global.QvpEngine = QvpEngine;
+  global.QvpPage = QvpPage;
+  global.QvpAtlas = QvpAtlas;
+  global.QvpOrnaments = QvpOrnaments;
+  global.QvpPassage = QvpPassage;
 })(typeof window !== 'undefined' ? window : globalThis);

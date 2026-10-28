@@ -49,6 +49,25 @@ class QvpWebBackend implements QvpBackend {
 
   final JSObject js;
 
+  static JSObject? _resolveEngineClass() {
+    if (globalContext.has('QvpEngine')) {
+      final obj = globalContext['QvpEngine'];
+      if (obj != null && !obj.isUndefined && !obj.isNull) {
+        return obj as JSObject;
+      }
+    }
+    if (globalContext.has('QVP')) {
+      final qvp = globalContext['QVP'] as JSObject?;
+      if (qvp != null && qvp.has('QvpEngine')) {
+        final obj = qvp['QvpEngine'];
+        if (obj != null && !obj.isUndefined && !obj.isNull) {
+          return obj as JSObject;
+        }
+      }
+    }
+    return null;
+  }
+
   static Future<QvpWebBackend> init({
     List<int>? wasmBytes,
     String? wasmAssetPath,
@@ -63,18 +82,47 @@ class QvpWebBackend implements QvpBackend {
       final data = await rootBundle.load(wasmAssetPath);
       bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     } else {
-      try {
-        final data = await rootBundle.load('packages/qvp_flutter/assets/wasm/qvp_ffi.wasm');
-        bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-      } catch (_) {
-        final url = wasmUrl ?? 'qvp_ffi.wasm';
-        bytes = await _fetchBytes(url);
+      Uint8List? loaded;
+      for (final p in [
+        'packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
+        'assets/wasm/qvp_ffi.wasm',
+        'assets/packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
+      ]) {
+        try {
+          final data = await rootBundle.load(p);
+          loaded = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+          break;
+        } catch (_) {}
+      }
+
+      if (loaded != null) {
+        bytes = loaded;
+      } else {
+        final urls = [
+          if (wasmUrl != null) wasmUrl,
+          'qvp_ffi.wasm',
+          'assets/packages/qvp_flutter/assets/wasm/qvp_ffi.wasm',
+          'assets/wasm/qvp_ffi.wasm',
+        ];
+        Uint8List? fetched;
+        for (final u in urls) {
+          try {
+            fetched = await _fetchBytes(u);
+            if (fetched.isNotEmpty) break;
+          } catch (_) {}
+        }
+        if (fetched == null || fetched.isEmpty) {
+          throw StateError('Could not load qvp_ffi.wasm from assets or network URLs: $urls');
+        }
+        bytes = fetched;
       }
     }
 
-    final jsEngineClass = globalContext['QvpEngine'] as JSObject?;
+    final jsEngineClass = _resolveEngineClass();
     if (jsEngineClass == null) {
-      throw StateError('QvpEngine not defined in JavaScript context');
+      throw StateError(
+        'QvpEngine not defined in JavaScript context. Ensure qvp.js is loaded in index.html or available as an asset.',
+      );
     }
 
     final promise = jsEngineClass.callMethod<JSPromise>('init'.toJS, bytes.toJS);
@@ -86,23 +134,56 @@ class QvpWebBackend implements QvpBackend {
   }
 
   static Future<void> _ensureJsLoaded() async {
-    if (globalContext.has('QvpEngine')) return;
-    try {
-      final jsText = await rootBundle.loadString('packages/qvp_flutter/assets/js/qvp.js');
-      _eval(jsText);
-    } catch (_) {
+    if (_resolveEngineClass() != null) return;
+
+    for (final p in [
+      'packages/qvp_flutter/assets/js/qvp.js',
+      'assets/js/qvp.js',
+      'assets/packages/qvp_flutter/assets/js/qvp.js',
+    ]) {
       try {
-        final jsText = await _fetchString('assets/packages/qvp_flutter/assets/js/qvp.js');
-        _eval(jsText);
-      } catch (_) {
-        final jsText = await _fetchString('qvp.js');
-        _eval(jsText);
-      }
+        final jsText = await rootBundle.loadString(p);
+        _injectScript(jsText);
+        if (_resolveEngineClass() != null) return;
+      } catch (_) {}
+    }
+
+    for (final u in [
+      'qvp.js',
+      'assets/packages/qvp_flutter/assets/js/qvp.js',
+      'packages/qvp_flutter/assets/js/qvp.js',
+      'assets/js/qvp.js',
+    ]) {
+      try {
+        final jsText = await _fetchString(u);
+        _injectScript(jsText);
+        if (_resolveEngineClass() != null) return;
+      } catch (_) {}
+    }
+
+    // If loaded via a deferred or async script tag in index.html, wait briefly
+    for (var i = 0; i < 20; i++) {
+      if (_resolveEngineClass() != null) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
 
-  static void _eval(String code) {
-    globalContext.callMethod('eval'.toJS, code.toJS);
+  static void _injectScript(String code) {
+    try {
+      final doc = globalContext['document'] as JSObject?;
+      if (doc != null) {
+        final script = doc.callMethod<JSObject>('createElement'.toJS, 'script'.toJS);
+        script['text'] = code.toJS;
+        final head = (doc['head'] ?? doc['body']) as JSObject?;
+        if (head != null) {
+          head.callMethod('appendChild'.toJS, script);
+          return;
+        }
+      }
+    } catch (_) {}
+    try {
+      globalContext.callMethod('eval'.toJS, code.toJS);
+    } catch (_) {}
   }
 
   static Future<Uint8List> _fetchBytes(String url) async {
@@ -202,10 +283,10 @@ class QvpWebBackend implements QvpBackend {
   // ── Engine Info ──
 
   @override
-  String get version => (js['version'] as JSString).toDart;
+  String get version => (js.callMethod<JSString>('version'.toJS)).toDart;
 
   @override
-  int get formatVersion => (js['formatVersion'] as JSNumber).toDartInt;
+  int get formatVersion => (js.callMethod<JSNumber>('formatVersion'.toJS)).toDartInt;
 
   @override
   String get engineName => 'qvp';

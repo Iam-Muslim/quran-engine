@@ -14,7 +14,7 @@ dependencies:
   qvp_flutter: ^0.2.2
 ```
 
-The pub.dev package supports Android, iOS, macOS, Windows, and Linux.
+The pub.dev package supports Android, iOS, macOS, Windows, Linux, and Web.
 When developing this repository, produce the native engines with:
 
 ```sh

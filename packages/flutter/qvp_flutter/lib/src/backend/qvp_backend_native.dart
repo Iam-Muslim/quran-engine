@@ -79,9 +79,7 @@ class QvpNativeBackend implements QvpBackend {
   }
 
   static ffi.DynamicLibrary resolveLibrary({String? path}) {
-    if (kIsWeb) {
-      throw UnsupportedError('QvpNativeBackend runs on native platforms.');
-    }
+    if (kIsWeb) throw UnsupportedError('QvpNativeBackend runs on native platforms.');
     if (path != null) return ffi.DynamicLibrary.open(path);
     if (Platform.isAndroid) return ffi.DynamicLibrary.open('libqvp_ffi.so');
     if (Platform.isIOS || Platform.isMacOS) {
@@ -94,19 +92,15 @@ class QvpNativeBackend implements QvpBackend {
     final env = Platform.environment['QVP_LIB'];
     if (env != null && env.isNotEmpty) return ffi.DynamicLibrary.open(env);
     if (Platform.isWindows) {
-      final local = File('qvp_ffi.dll');
-      if (local.existsSync()) return ffi.DynamicLibrary.open(local.absolute.path);
-      final exeDir = File(Platform.resolvedExecutable).parent;
-      final inExe = File('${exeDir.path}${Platform.pathSeparator}qvp_ffi.dll');
-      if (inExe.existsSync()) return ffi.DynamicLibrary.open(inExe.path);
+      for (final p in ['qvp_ffi.dll', '${File(Platform.resolvedExecutable).parent.path}\\qvp_ffi.dll']) {
+        if (File(p).existsSync()) return ffi.DynamicLibrary.open(File(p).absolute.path);
+      }
       return ffi.DynamicLibrary.open('qvp_ffi.dll');
     }
     if (Platform.isLinux) {
-      final local = File('libqvp_ffi.so');
-      if (local.existsSync()) return ffi.DynamicLibrary.open(local.absolute.path);
-      final exeDir = File(Platform.resolvedExecutable).parent;
-      final inLib = File('${exeDir.path}/lib/libqvp_ffi.so');
-      if (inLib.existsSync()) return ffi.DynamicLibrary.open(inLib.path);
+      for (final p in ['libqvp_ffi.so', '${File(Platform.resolvedExecutable).parent.path}/lib/libqvp_ffi.so']) {
+        if (File(p).existsSync()) return ffi.DynamicLibrary.open(File(p).absolute.path);
+      }
       return ffi.DynamicLibrary.open('libqvp_ffi.so');
     }
     return ffi.DynamicLibrary.open('libqvp_ffi.so');
@@ -115,8 +109,7 @@ class QvpNativeBackend implements QvpBackend {
   static const int _scratchBytes = 1 << 18; // 256 KB
 
   final QvpBindings b;
-  late final ffi.Pointer<ffi.Uint8> _scratch;
-  late final ffi.Pointer<ffi.Uint8> _scratchIn;
+  late final ffi.Pointer<ffi.Uint8> _scratch, _scratchIn;
   late final ffi.Pointer<QvpStrC> _str;
   late final ffi.Pointer<QvpTargetC> _target;
   late final ffi.Pointer<QvpSelectorC> _sel;
@@ -133,10 +126,8 @@ class QvpNativeBackend implements QvpBackend {
   late final ffi.Pointer<QvpAyahInfoC> _ayahInfo;
   late final ffi.Pointer<QvpLineInfoC> _lineInfo;
   late final ffi.Pointer<QvpDecorationInfoC> _decoInfo;
-  late final ffi.Pointer<QvpZoomC> _zoom;
-  late final ffi.Pointer<QvpZoomC> _zoomOut;
-  late final ffi.Pointer<QvpViewC> _view;
-  late final ffi.Pointer<QvpViewC> _viewOut;
+  late final ffi.Pointer<QvpZoomC> _zoom, _zoomOut;
+  late final ffi.Pointer<QvpViewC> _view, _viewOut;
   late final ffi.Pointer<QvpZoomChangeC> _zoomChange;
   late final ffi.Pointer<QvpDressSpecC> _dressSpec;
   late final ffi.Pointer<QvpPassageSpecC> _passageSpec;
@@ -171,8 +162,7 @@ class QvpNativeBackend implements QvpBackend {
   R _withString<R>(String s, R Function(ffi.Pointer<ffi.Uint8> p, int len) f) => _withBytes(utf8.encode(s), f);
 
   R _withU32<R>(List<int> v, R Function(ffi.Pointer<ffi.Uint32> p, int n) f) {
-    final bytesNeeded = v.length * ffi.sizeOf<ffi.Uint32>();
-    if (bytesNeeded <= _scratchBytes) {
+    if (v.length * 4 <= _scratchBytes) {
       final p = _scratchIn.cast<ffi.Uint32>();
       p.asTypedList(v.length).setAll(0, v);
       return f(p, v.length);
@@ -193,9 +183,39 @@ class QvpNativeBackend implements QvpBackend {
   ) {
     final p = _scratch.cast<C>();
     final cap = _scratchBytes ~/ elemSize;
-    final count = fn(p, cap);
-    final n = count.clamp(0, cap);
+    final n = fn(p, cap).clamp(0, cap);
     return List<R>.generate(n, (i) => decode(p, i), growable: false);
+  }
+
+  List<int> _readU32(int Function(ffi.Pointer<ffi.Uint32> p, int cap) fn) {
+    final p = _scratch.cast<ffi.Uint32>();
+    final cap = _scratchBytes ~/ 4;
+    final n = fn(p, cap).clamp(0, cap);
+    return Uint32List.fromList(p.asTypedList(n));
+  }
+
+  List<QvpBox> _readBoxes(int Function(ffi.Pointer<QvpBoxC> out, int cap) fn) =>
+      _readArray<QvpBoxC, QvpBox>(ffi.sizeOf<QvpBoxC>(), fn, (ptr, i) {
+        final b = ptr[i];
+        return QvpBox(id: b.id, line: b.line, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, color: b.color, radius: b.radius);
+      });
+
+  R _withTarget<R>(PageHandle handle, QvpTarget target, R Function(ffi.Pointer<QvpTargetC> t) f) {
+    _writeTarget(_target, target, handle);
+    try {
+      return f(_target);
+    } finally {
+      _freeTarget(_target);
+    }
+  }
+
+  R _withTheme<R>(QvpTheme t, R Function(ffi.Pointer<QvpThemeC> th) f) {
+    _writeTheme(_theme, t);
+    try {
+      return f(_theme);
+    } finally {
+      _freeTheme(_theme);
+    }
   }
 
   String _name(void Function(int, ffi.Pointer<QvpStrC>) fn, int v) {
@@ -277,31 +297,31 @@ class QvpNativeBackend implements QvpBackend {
   (PageHandle, QvpPageData) pageLoad(Uint8List bytes) {
     final h = _withBytes(bytes, (p, n) => b.pageLoad(p, n));
     if (h == ffi.nullptr) throw const FormatException('qvp_page_load failed');
-
     b.pageInfo(h, _pageInfo);
     final i = _pageInfo.ref;
     b.geometry(h, _geom);
     final g = _geom.ref;
-
-    final data = QvpPageData(
-      width: i.width,
-      height: i.height,
-      lineSpacing: b.pageLineSpacing(h),
-      page: i.page,
-      nLines: i.nLines,
-      nAyahs: i.nAyahs,
-      nWords: i.nWords,
-      nPaths: i.nPaths,
-      nDecorations: i.nDecorations,
-      ops: Uint8List.fromList(g.ops.asTypedList(g.opsLen)),
-      pts: Float32List.fromList(g.pts.asTypedList(g.ptsLen)),
-      table: Uint32List.fromList(g.table.asTypedList(g.nPaths * 8)),
-      words: List.generate(i.nWords, (w) => _readWord(h, w), growable: false),
-      ayahs: List.generate(i.nAyahs, (a) => _readAyah(h, a), growable: false),
-      lines: List.generate(i.nLines, (l) => _readLine(h, l), growable: false),
-      decorations: List.generate(i.nDecorations, (d) => _readDeco(h, d), growable: false),
+    return (
+      NativePageHandle(h),
+      QvpPageData(
+        width: i.width,
+        height: i.height,
+        lineSpacing: b.pageLineSpacing(h),
+        page: i.page,
+        nLines: i.nLines,
+        nAyahs: i.nAyahs,
+        nWords: i.nWords,
+        nPaths: i.nPaths,
+        nDecorations: i.nDecorations,
+        ops: Uint8List.fromList(g.ops.asTypedList(g.opsLen)),
+        pts: Float32List.fromList(g.pts.asTypedList(g.ptsLen)),
+        table: Uint32List.fromList(g.table.asTypedList(g.nPaths * 8)),
+        words: List.generate(i.nWords, (w) => _readWord(h, w), growable: false),
+        ayahs: List.generate(i.nAyahs, (a) => _readAyah(h, a), growable: false),
+        lines: List.generate(i.nLines, (l) => _readLine(h, l), growable: false),
+        decorations: List.generate(i.nDecorations, (d) => _readDeco(h, d), growable: false),
+      ),
     );
-    return (NativePageHandle(h), data);
   }
 
   @override
@@ -316,81 +336,25 @@ class QvpNativeBackend implements QvpBackend {
   QvpWordInfo _readWord(ffi.Pointer<QvpPageC> h, int i) {
     if (b.wordInfo(h, i, _wordInfo) == 0) throw StateError('qvp_word_info($i) failed');
     final w = _wordInfo.ref;
-    return QvpWordInfo(
-      index: i,
-      surah: w.surah,
-      ayah: w.ayah,
-      word: w.word,
-      line: w.lineNumber,
-      ayahIndex: w.ayahIndex,
-      lineIndex: w.lineIndex,
-      x0: w.x0,
-      y0: w.y0,
-      x1: w.x1,
-      y1: w.y1,
-      text: str(w.text),
-      firstPath: w.firstPath,
-      nPaths: w.nPaths,
-    );
+    return QvpWordInfo(index: i, surah: w.surah, ayah: w.ayah, word: w.word, line: w.lineNumber, ayahIndex: w.ayahIndex, lineIndex: w.lineIndex, x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1, text: str(w.text), firstPath: w.firstPath, nPaths: w.nPaths);
   }
 
   QvpAyahInfo _readAyah(ffi.Pointer<QvpPageC> h, int i) {
     if (b.ayahInfo(h, i, _ayahInfo) == 0) throw StateError('qvp_ayah_info($i) failed');
     final a = _ayahInfo.ref;
-    return QvpAyahInfo(
-      index: i,
-      surah: a.surah,
-      ayah: a.ayah,
-      fragment: a.fragment,
-      fragments: a.fragments,
-      flags: a.flags,
-      rubuAlHizb: a.rubuAlHizb,
-      firstWord: a.firstWord,
-      nWords: a.nWords,
-      ayahMarkDecoration: a.ayahMarkDecoration,
-      x0: a.x0,
-      y0: a.y0,
-      x1: a.x1,
-      y1: a.y1,
-    );
+    return QvpAyahInfo(index: i, surah: a.surah, ayah: a.ayah, fragment: a.fragment, fragments: a.fragments, flags: a.flags, rubuAlHizb: a.rubuAlHizb, firstWord: a.firstWord, nWords: a.nWords, ayahMarkDecoration: a.ayahMarkDecoration, x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1);
   }
 
   QvpLineInfo _readLine(ffi.Pointer<QvpPageC> h, int i) {
     if (b.lineInfo(h, i, _lineInfo) == 0) throw StateError('qvp_line_info($i) failed');
     final l = _lineInfo.ref;
-    return QvpLineInfo(
-      index: i,
-      lineNumber: l.lineNumber,
-      isHeader: l.isHeader != 0,
-      firstWord: l.firstWord,
-      nWords: l.nWords,
-      x0: l.x0,
-      y0: l.y0,
-      x1: l.x1,
-      y1: l.y1,
-      bandY0: l.bandY0,
-      bandY1: l.bandY1,
-      centre: l.centre,
-    );
+    return QvpLineInfo(index: i, lineNumber: l.lineNumber, isHeader: l.isHeader != 0, firstWord: l.firstWord, nWords: l.nWords, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1, bandY0: l.bandY0, bandY1: l.bandY1, centre: l.centre);
   }
 
   QvpDecorationInfo _readDeco(ffi.Pointer<QvpPageC> h, int i) {
     if (b.decorationInfo(h, i, _decoInfo) == 0) throw StateError('qvp_decoration_info($i) failed');
     final d = _decoInfo.ref;
-    return QvpDecorationInfo(
-      index: i,
-      decoration: d.decoration,
-      surah: d.surah,
-      ayah: d.ayah,
-      line: d.line,
-      x0: d.x0,
-      y0: d.y0,
-      x1: d.x1,
-      y1: d.y1,
-      text: str(d.text),
-      firstPath: d.firstPath,
-      nPaths: d.nPaths,
-    );
+    return QvpDecorationInfo(index: i, decoration: d.decoration, surah: d.surah, ayah: d.ayah, line: d.line, x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, text: str(d.text), firstPath: d.firstPath, nPaths: d.nPaths);
   }
 
   // ── Page text & query ──
@@ -406,18 +370,8 @@ class QvpNativeBackend implements QvpBackend {
       b.findWord(_page(handle), surah, ayah, word);
 
   @override
-  List<int> targetWords(PageHandle handle, QvpTarget target) {
-    _writeTarget(_target, target, handle);
-    try {
-      final p = _scratch.cast<ffi.Uint32>();
-      final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-      final count = b.targetWords(_page(handle), _target, p, cap);
-      final n = count.clamp(0, cap);
-      return List<int>.from(p.asTypedList(n), growable: false);
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  List<int> targetWords(PageHandle handle, QvpTarget target) =>
+      _withTarget(handle, target, (t) => _readU32((p, cap) => b.targetWords(_page(handle), t, p, cap)));
 
   @override
   List<QvpSurah> surahs(PageHandle handle) {
@@ -464,24 +418,10 @@ class QvpNativeBackend implements QvpBackend {
   List<QvpSurahHeader> surahHeaders(PageHandle handle, {required bool view}) =>
       _readArray<QvpSurahHeaderC, QvpSurahHeader>(
         ffi.sizeOf<QvpSurahHeaderC>(),
-        (out, cap) => view
-            ? b.surahHeadersView(_page(handle), out, cap)
-            : b.surahHeaders(_page(handle), out, cap),
+        (out, cap) => view ? b.surahHeadersView(_page(handle), out, cap) : b.surahHeaders(_page(handle), out, cap),
         (ptr, i) {
           final h = ptr[i];
-          return QvpSurahHeader(
-            decoration: h.decoration,
-            surah: h.surah,
-            line: h.line,
-            x0: h.x0,
-            y0: h.y0,
-            x1: h.x1,
-            y1: h.y1,
-            titleX0: h.titleX0,
-            titleY0: h.titleY0,
-            titleX1: h.titleX1,
-            titleY1: h.titleY1,
-          );
+          return QvpSurahHeader(decoration: h.decoration, surah: h.surah, line: h.line, x0: h.x0, y0: h.y0, x1: h.x1, y1: h.y1, titleX0: h.titleX0, titleY0: h.titleY0, titleX1: h.titleX1, titleY1: h.titleY1);
         },
       );
 
@@ -491,17 +431,7 @@ class QvpNativeBackend implements QvpBackend {
         (out, cap) => b.ayahMarks(_page(handle), out, cap),
         (ptr, i) {
           final m = ptr[i];
-          return QvpAyahMark(
-            decoration: m.decoration,
-            surah: m.surah,
-            ayah: m.ayah,
-            line: m.line,
-            cx: m.cx,
-            cy: m.cy,
-            r: m.r,
-            ornamentPath: m.ornamentPath,
-            numeralPath: m.numeralPath,
-          );
+          return QvpAyahMark(decoration: m.decoration, surah: m.surah, ayah: m.ayah, line: m.line, cx: m.cx, cy: m.cy, r: m.r, ornamentPath: m.ornamentPath, numeralPath: m.numeralPath);
         },
       );
 
@@ -511,16 +441,7 @@ class QvpNativeBackend implements QvpBackend {
         (out, cap) => b.rosettes(_page(handle), out, cap),
         (ptr, i) {
           final r = ptr[i];
-          return QvpRosette(
-            decoration: r.decoration,
-            surah: r.surah,
-            ayah: r.ayah,
-            juz: r.juz,
-            hizb: r.hizb,
-            nisf: r.nisf,
-            rubuAlHizb: r.rubuAlHizb,
-            rubuAlHizbInHizb: r.rubuAlHizbInHizb,
-          );
+          return QvpRosette(decoration: r.decoration, surah: r.surah, ayah: r.ayah, juz: r.juz, hizb: r.hizb, nisf: r.nisf, rubuAlHizb: r.rubuAlHizb, rubuAlHizbInHizb: r.rubuAlHizbInHizb);
         },
       );
 
@@ -528,27 +449,15 @@ class QvpNativeBackend implements QvpBackend {
   List<QvpSajdah> sajdahs(PageHandle handle) => _readArray<QvpSajdahC, QvpSajdah>(
         ffi.sizeOf<QvpSajdahC>(),
         (out, cap) => b.sajdahs(_page(handle), out, cap),
-        (ptr, i) {
-          final s = ptr[i];
-          return QvpSajdah(
-            decoration: s.decoration,
-            surah: s.surah,
-            ayah: s.ayah,
-            signPath: s.signPath,
-          );
-        },
+        (ptr, i) => QvpSajdah(decoration: ptr[i].decoration, surah: ptr[i].surah, ayah: ptr[i].ayah, signPath: ptr[i].signPath),
       );
 
   @override
   List<(int, int)> ayahKeys(PageHandle handle) {
     final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.ayahKeys(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<(int, int)>.generate(n, (i) {
-      final k = p[i];
-      return (k >> 16, k & 0xffff);
-    }, growable: false);
+    final cap = _scratchBytes ~/ 4;
+    final n = b.ayahKeys(_page(handle), p, cap).clamp(0, cap);
+    return List<(int, int)>.generate(n, (i) => (p[i] >> 16, p[i] & 0xffff), growable: false);
   }
 
   @override
@@ -561,10 +470,10 @@ class QvpNativeBackend implements QvpBackend {
   @override
   List<int>? reciteMap(PageHandle handle, int surah, int ayah, int nSegments) {
     final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
+    final cap = _scratchBytes ~/ 4;
     final res = b.reciteMap(_page(handle), surah, ayah, nSegments, p, cap);
     if (res < 0) return null;
-    return List<int>.from(p.asTypedList(nSegments), growable: false);
+    return Uint32List.fromList(p.asTypedList(nSegments));
   }
 
   @override
@@ -580,35 +489,20 @@ class QvpNativeBackend implements QvpBackend {
   }
 
   @override
-  String text(PageHandle handle, QvpTarget target, int form, String wordSep, String lineSep) {
-    _writeTarget(_target, target, handle);
-    try {
-      return _withString(wordSep, (wPtr, wLen) => _withString(lineSep, (lPtr, lLen) {
-        b.text(_page(handle), _target, form, wPtr, wLen, lPtr, lLen, _str);
+  String text(PageHandle handle, QvpTarget target, int form, String wordSep, String lineSep) =>
+      _withTarget(handle, target, (t) => _withString(wordSep, (wPtr, wLen) => _withString(lineSep, (lPtr, lLen) {
+        b.text(_page(handle), t, form, wPtr, wLen, lPtr, lLen, _str);
         return _s();
-      }));
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+      })));
 
   @override
   List<QvpMatch> search(PageHandle handle, String query, {int form = 4, String mode = 'includes', bool normalize = true, bool looseMatch = true, int limit = 0}) {
-    final modeCode = switch (mode) {
-      'exact' => 1,
-      'prefix' => 2,
-      _ => 0,
-    };
+    final modeCode = switch (mode) { 'exact' => 1, 'prefix' => 2, _ => 0 };
     return _withString(query, (qPtr, qLen) {
       final p = _scratch.cast<QvpMatchC>();
       final cap = _scratchBytes ~/ ffi.sizeOf<QvpMatchC>();
-      final count = b.search(_page(handle), qPtr, qLen, form, modeCode, normalize ? 1 : 0, looseMatch ? 1 : 0, limit, p, cap);
-      final n = count.clamp(0, cap);
-      return List<QvpMatch>.generate(n, (i) => QvpMatch(
-        word: p[i].word,
-        index: p[i].index,
-        isLooseMatch: p[i].isLooseMatch != 0,
-      ), growable: false);
+      final n = b.search(_page(handle), qPtr, qLen, form, modeCode, normalize ? 1 : 0, looseMatch ? 1 : 0, limit, p, cap).clamp(0, cap);
+      return List<QvpMatch>.generate(n, (i) => QvpMatch(word: p[i].word, index: p[i].index, isLooseMatch: p[i].isLooseMatch != 0), growable: false);
     });
   }
 
@@ -628,29 +522,23 @@ class QvpNativeBackend implements QvpBackend {
   // ── Hit testing ──
 
   @override
-  QvpHit? hitTestExact(PageHandle handle, double x, double y) {
-    if (b.hitTestExact(_page(handle), x, y, _hit) == 0) return null;
-    return _readHit(_hit.ref);
-  }
+  QvpHit? hitTestExact(PageHandle handle, double x, double y) =>
+      b.hitTestExact(_page(handle), x, y, _hit) == 0 ? null : _readHit(_hit.ref);
 
   @override
-  QvpHit? hitTestExactView(PageHandle handle, double viewX, double viewY) {
-    if (b.hitTestExactView(_page(handle), viewX, viewY, _hit) == 0) return null;
-    return _readHit(_hit.ref);
-  }
+  QvpHit? hitTestExactView(PageHandle handle, double viewX, double viewY) =>
+      b.hitTestExactView(_page(handle), viewX, viewY, _hit) == 0 ? null : _readHit(_hit.ref);
 
   @override
   QvpHit? hitTest(PageHandle handle, double x, double y, QvpHitOptions options) {
     _writeHitOptions(_hitOpt, options);
-    if (b.hitTest(_page(handle), x, y, _hitOpt, _hit) == 0) return null;
-    return _readHit(_hit.ref);
+    return b.hitTest(_page(handle), x, y, _hitOpt, _hit) == 0 ? null : _readHit(_hit.ref);
   }
 
   @override
   QvpHit? hitTestView(PageHandle handle, double viewX, double viewY, QvpHitOptions options) {
     _writeHitOptions(_hitOpt, options);
-    if (b.hitTestView(_page(handle), viewX, viewY, _hitOpt, _hit) == 0) return null;
-    return _readHit(_hit.ref);
+    return b.hitTestView(_page(handle), viewX, viewY, _hitOpt, _hit) == 0 ? null : _readHit(_hit.ref);
   }
 
   @override
@@ -659,15 +547,7 @@ class QvpNativeBackend implements QvpBackend {
         (out, cap) => b.lineBands(_page(handle), out, cap),
         (ptr, i) {
           final lb = ptr[i];
-          return QvpLineBand(
-            line: lb.line,
-            lineNumber: lb.lineNumber,
-            y0: lb.y0,
-            y1: lb.y1,
-            mid: lb.mid,
-            inkY0: lb.inkY0,
-            inkY1: lb.inkY1,
-          );
+          return QvpLineBand(line: lb.line, lineNumber: lb.lineNumber, y0: lb.y0, y1: lb.y1, mid: lb.mid, inkY0: lb.inkY0, inkY1: lb.inkY1);
         },
       );
 
@@ -677,18 +557,7 @@ class QvpNativeBackend implements QvpBackend {
         (out, cap) => b.hitAreas(_page(handle), gapBias, out, cap),
         (ptr, i) {
           final ha = ptr[i];
-          return QvpHitArea(
-            word: ha.word,
-            line: ha.line,
-            x0: ha.x0,
-            y0: ha.y0,
-            x1: ha.x1,
-            y1: ha.y1,
-            inkX0: ha.inkX0,
-            inkY0: ha.inkY0,
-            inkX1: ha.inkX1,
-            inkY1: ha.inkY1,
-          );
+          return QvpHitArea(word: ha.word, line: ha.line, x0: ha.x0, y0: ha.y0, x1: ha.x1, y1: ha.y1, inkX0: ha.inkX0, inkY0: ha.inkY0, inkX1: ha.inkX1, inkY1: ha.inkY1);
         },
       );
 
@@ -701,17 +570,16 @@ class QvpNativeBackend implements QvpBackend {
     return _readLayout(_layout.ref);
   }
 
+  QvpZoomChange _readZoomChange(QvpZoomChangeC c) =>
+      QvpZoomChange(zoom: _readZoom(c.zoom), view: _readView(c.view), relaid: c.relaid != 0);
+
   @override
   QvpZoomChange zoomPinch(PageHandle handle, QvpLayoutSpec spec, QvpZoom zoom, QvpView view, double factor, double focalX, double focalY) {
     _writeSpec(_spec, spec);
     _writeZoom(_zoom, zoom);
     _writeView(_view, view);
     b.zoomPinch(_page(handle), _spec, _zoom, _view, factor, focalX, focalY, _zoomChange);
-    return QvpZoomChange(
-      zoom: _readZoom(_zoomChange.ref.zoom),
-      view: _readView(_zoomChange.ref.view),
-      relaid: _zoomChange.ref.relaid != 0,
-    );
+    return _readZoomChange(_zoomChange.ref);
   }
 
   @override
@@ -720,11 +588,7 @@ class QvpNativeBackend implements QvpBackend {
     _writeZoom(_zoom, zoom);
     _writeView(_view, view);
     b.zoomToStep(_page(handle), _spec, _zoom, step, _view, _zoomChange);
-    return QvpZoomChange(
-      zoom: _readZoom(_zoomChange.ref.zoom),
-      view: _readView(_zoomChange.ref.view),
-      relaid: _zoomChange.ref.relaid != 0,
-    );
+    return _readZoomChange(_zoomChange.ref);
   }
 
   @override
@@ -762,9 +626,8 @@ class QvpNativeBackend implements QvpBackend {
   Float32List zoomSteps(PageHandle handle, QvpLayoutSpec spec) {
     _writeSpec(_spec, spec);
     final p = _scratch.cast<ffi.Float>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Float>();
-    final count = b.zoomSteps(_page(handle), _spec, p, cap);
-    final n = count.clamp(0, cap);
+    final cap = _scratchBytes ~/ 4;
+    final n = b.zoomSteps(_page(handle), _spec, p, cap).clamp(0, cap);
     return Float32List.fromList(p.asTypedList(n));
   }
 
@@ -785,16 +648,14 @@ class QvpNativeBackend implements QvpBackend {
   QvpSideways sidewaysDrag(PageHandle handle, QvpZoom zoom, QvpView view, double fitScale) {
     _writeZoom(_zoom, zoom);
     _writeView(_view, view);
-    final res = b.sidewaysDrag(_page(handle), _zoom, _view, fitScale);
-    return res == 1 ? QvpSideways.turnPage : QvpSideways.pan;
+    return b.sidewaysDrag(_page(handle), _zoom, _view, fitScale) == 1 ? QvpSideways.turnPage : QvpSideways.pan;
   }
 
   @override
   List<QvpDraw> layoutDrawList(PageHandle handle, {double bandTop = 0, double bandBottom = 0}) {
     final p = _scratch.cast<ffi.Uint32>();
     final cap = _scratchBytes ~/ 4;
-    final count = b.layoutDrawList(_page(handle), bandTop, bandBottom, p, cap);
-    final n = count.clamp(0, cap ~/ 2);
+    final n = b.layoutDrawList(_page(handle), bandTop, bandBottom, p, cap).clamp(0, cap ~/ 2);
     return List<QvpDraw>.generate(n, (i) => QvpDraw(p[i * 2], p[i * 2 + 1]), growable: false);
   }
 
@@ -802,20 +663,13 @@ class QvpNativeBackend implements QvpBackend {
   List<QvpPlacement> layoutPlacements(PageHandle handle) {
     final p = _scratch.cast<ffi.Float>();
     final cap = _scratchBytes ~/ 4;
-    final count = b.layoutPlacements(_page(handle), p, cap);
-    final n = count.clamp(0, cap ~/ 4);
-    return List<QvpPlacement>.generate(
-      n,
-      (i) => QvpPlacement(p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]),
-      growable: false,
-    );
+    final n = b.layoutPlacements(_page(handle), p, cap).clamp(0, cap ~/ 4);
+    return List<QvpPlacement>.generate(n, (i) => QvpPlacement(p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]), growable: false);
   }
 
   @override
-  QvpLayout? readLayout(PageHandle handle) {
-    if (b.layoutCurrent(_page(handle), _layout) == 0) return null;
-    return _readLayout(_layout.ref);
-  }
+  QvpLayout? readLayout(PageHandle handle) =>
+      b.layoutCurrent(_page(handle), _layout) == 0 ? null : _readLayout(_layout.ref);
 
   @override
   int? layoutWordRow(PageHandle handle, int word) {
@@ -826,9 +680,8 @@ class QvpNativeBackend implements QvpBackend {
   @override
   Uint32List layoutRowWords(PageHandle handle, int row) {
     final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.layoutRowWords(_page(handle), row, p, cap);
-    final n = count.clamp(0, cap);
+    final cap = _scratchBytes ~/ 4;
+    final n = b.layoutRowWords(_page(handle), row, p, cap).clamp(0, cap);
     return Uint32List.fromList(p.asTypedList(n));
   }
 
@@ -873,14 +726,8 @@ class QvpNativeBackend implements QvpBackend {
   }
 
   @override
-  int styleTarget(PageHandle handle, QvpTarget target, int color, {int ms = 0, int layer = 0}) {
-    _writeTarget(_target, target, handle);
-    try {
-      return b.styleAddTarget(_page(handle), layer, _target, color, ms);
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  int styleTarget(PageHandle handle, QvpTarget target, int color, {int ms = 0, int layer = 0}) =>
+      _withTarget(handle, target, (t) => b.styleAddTarget(_page(handle), layer, t, color, ms));
 
   @override
   int removeStyle(PageHandle handle, int styleHandle) => b.styleRemove(_page(handle), styleHandle);
@@ -905,23 +752,10 @@ class QvpNativeBackend implements QvpBackend {
   void setDefaultColor(PageHandle handle, int color) => b.styleDefaultColor(_page(handle), color);
 
   @override
-  int theme(PageHandle handle, QvpTheme t) {
-    _writeTheme(_theme, t);
-    try {
-      return b.theme(_page(handle), _theme);
-    } finally {
-      _freeTheme(_theme);
-    }
-  }
+  int theme(PageHandle handle, QvpTheme t) => _withTheme(t, (th) => b.theme(_page(handle), th));
 
   @override
-  List<int> styleHandles(PageHandle handle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.styleHandles(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> styleHandles(PageHandle handle) => _readU32((p, cap) => b.styleHandles(_page(handle), p, cap));
 
   // ── Animation & display ──
 
@@ -929,17 +763,14 @@ class QvpNativeBackend implements QvpBackend {
   bool tick(PageHandle handle, double nowMs) => b.tick(_page(handle), nowMs) != 0;
 
   @override
-  Uint32List colors(PageHandle handle, int nPaths) {
-    final ptr = b.colors(_page(handle));
-    return Uint32List.fromList(ptr.asTypedList(nPaths));
-  }
+  Uint32List colors(PageHandle handle, int nPaths) =>
+      Uint32List.fromList(b.colors(_page(handle)).asTypedList(nPaths));
 
   @override
   List<QvpStyledPath> styledPaths(PageHandle handle) {
     final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ (ffi.sizeOf<ffi.Uint32>() * 2);
-    final count = b.styledPaths(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
+    final cap = _scratchBytes ~/ 8;
+    final n = b.styledPaths(_page(handle), p, cap).clamp(0, cap);
     return List<QvpStyledPath>.generate(n, (i) => (path: p[i * 2], color: p[i * 2 + 1]), growable: false);
   }
 
@@ -949,25 +780,15 @@ class QvpNativeBackend implements QvpBackend {
   // ── Highlights ──
 
   @override
-  int highlight(PageHandle handle, QvpTarget target, QvpHighlightStyle style) {
-    _writeTarget(_target, target, handle);
-    try {
-      _writeHighlight(_hl, style);
-      return b.highlight(_page(handle), _target, _hl);
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  int highlight(PageHandle handle, QvpTarget target, QvpHighlightStyle style) =>
+      _withTarget(handle, target, (t) {
+        _writeHighlight(_hl, style);
+        return b.highlight(_page(handle), t, _hl);
+      });
 
   @override
-  bool moveHighlight(PageHandle handle, int highlightHandle, QvpTarget target) {
-    _writeTarget(_target, target, handle);
-    try {
-      return b.moveHighlight(_page(handle), highlightHandle, _target) != 0;
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  bool moveHighlight(PageHandle handle, int highlightHandle, QvpTarget target) =>
+      _withTarget(handle, target, (t) => b.moveHighlight(_page(handle), highlightHandle, t) != 0);
 
   @override
   bool restyleHighlight(PageHandle handle, int highlightHandle, QvpHighlightStyle style) {
@@ -983,61 +804,18 @@ class QvpNativeBackend implements QvpBackend {
   void clearHighlights(PageHandle handle) => b.clearHighlights(_page(handle));
 
   @override
-  List<int> highlightHandles(PageHandle handle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.highlightHandles(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> highlightHandles(PageHandle handle) => _readU32((p, cap) => b.highlightHandles(_page(handle), p, cap));
 
   @override
-  List<int> highlightWords(PageHandle handle, int highlightHandle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.highlightWords(_page(handle), highlightHandle, p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> highlightWords(PageHandle handle, int highlightHandle) =>
+      _readU32((p, cap) => b.highlightWords(_page(handle), highlightHandle, p, cap));
 
   @override
-  List<QvpBox> highlightBoxesView(PageHandle handle) => _readArray<QvpBoxC, QvpBox>(
-        ffi.sizeOf<QvpBoxC>(),
-        (out, cap) => b.highlightBoxesView(_page(handle), out, cap),
-        (ptr, i) {
-          final bx = ptr[i];
-          return QvpBox(
-            id: bx.id,
-            line: bx.line,
-            x0: bx.x0,
-            y0: bx.y0,
-            x1: bx.x1,
-            y1: bx.y1,
-            color: bx.color,
-            radius: bx.radius,
-          );
-        },
-      );
+  List<QvpBox> highlightBoxesView(PageHandle handle) => _readBoxes((out, cap) => b.highlightBoxesView(_page(handle), out, cap));
 
   @override
   List<QvpBox> wordBands(PageHandle handle, List<int> ws, {required bool inkHeight, required double padX, required double padY}) =>
-      _withU32(ws, (wPtr, n) => _readArray<QvpBoxC, QvpBox>(
-            ffi.sizeOf<QvpBoxC>(),
-            (out, cap) => b.wordBands(_page(handle), wPtr, n, inkHeight ? 1 : 0, padX, padY, out, cap),
-            (ptr, i) {
-              final bx = ptr[i];
-              return QvpBox(
-                id: bx.id,
-                line: bx.line,
-                x0: bx.x0,
-                y0: bx.y0,
-                x1: bx.x1,
-                y1: bx.y1,
-                color: bx.color,
-                radius: bx.radius,
-              );
-            },
-          ));
+      _withU32(ws, (wPtr, n) => _readBoxes((out, cap) => b.wordBands(_page(handle), wPtr, n, inkHeight ? 1 : 0, padX, padY, out, cap)));
 
   // ── Selection ──
 
@@ -1045,13 +823,7 @@ class QvpNativeBackend implements QvpBackend {
   void select(PageHandle handle, int anchor, int focus) => b.select(_page(handle), anchor, focus);
 
   @override
-  List<int> selection(PageHandle handle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.selection(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> selection(PageHandle handle) => _readU32((p, cap) => b.selection(_page(handle), p, cap));
 
   @override
   String selectionText(PageHandle handle, int form, bool includeCitation) {
@@ -1062,14 +834,8 @@ class QvpNativeBackend implements QvpBackend {
   // ── Masks & memorisation ──
 
   @override
-  void mask(PageHandle handle, QvpTarget target, int mode) {
-    _writeTarget(_target, target, handle);
-    try {
-      b.mask(_page(handle), _target, mode);
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  void mask(PageHandle handle, QvpTarget target, int mode) =>
+      _withTarget(handle, target, (t) => b.mask(_page(handle), t, mode));
 
   @override
   void maskFrom(PageHandle handle, int wordIndex, int mode) => b.maskFrom(_page(handle), wordIndex, mode);
@@ -1100,41 +866,13 @@ class QvpNativeBackend implements QvpBackend {
   void unmask(PageHandle handle) => b.unmask(_page(handle));
 
   @override
-  List<int> maskHidden(PageHandle handle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.maskHidden(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> maskHidden(PageHandle handle) => _readU32((p, cap) => b.maskHidden(_page(handle), p, cap));
 
   @override
-  List<int> maskWords(PageHandle handle) {
-    final p = _scratch.cast<ffi.Uint32>();
-    final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint32>();
-    final count = b.maskWords(_page(handle), p, cap);
-    final n = count.clamp(0, cap);
-    return List<int>.from(p.asTypedList(n), growable: false);
-  }
+  List<int> maskWords(PageHandle handle) => _readU32((p, cap) => b.maskWords(_page(handle), p, cap));
 
   @override
-  List<QvpBox> maskBoxesView(PageHandle handle) => _readArray<QvpBoxC, QvpBox>(
-        ffi.sizeOf<QvpBoxC>(),
-        (out, cap) => b.maskBoxesView(_page(handle), out, cap),
-        (ptr, i) {
-          final bx = ptr[i];
-          return QvpBox(
-            id: bx.id,
-            line: bx.line,
-            x0: bx.x0,
-            y0: bx.y0,
-            x1: bx.x1,
-            y1: bx.y1,
-            color: bx.color,
-            radius: bx.radius,
-          );
-        },
-      );
+  List<QvpBox> maskBoxesView(PageHandle handle) => _readBoxes((out, cap) => b.maskBoxesView(_page(handle), out, cap));
 
   // ── Reveal ──
 
@@ -1182,11 +920,7 @@ class QvpNativeBackend implements QvpBackend {
   QvpDressView dressView(PageHandle page, double scale, double viewportW) {
     final dims = _scratch.cast<ffi.Float>();
     b.dressView(_page(page), scale, viewportW, _viewOut, dims);
-    return QvpDressView(
-      view: _readView(_viewOut.ref),
-      width: dims[0],
-      height: dims[1],
-    );
+    return QvpDressView(view: _readView(_viewOut.ref), width: dims[0], height: dims[1]);
   }
 
   @override
@@ -1234,15 +968,12 @@ class QvpNativeBackend implements QvpBackend {
       final evenOdd = flags & 0x100 != 0;
       final path = Path()..fillType = evenOdd ? PathFillType.evenOdd : PathFillType.nonZero;
       decodeQvpPath(path, ops, opStart, opCount, pts, ptStart);
-      final stroke = flags & 0x200 != 0;
-      final kind = QvpOrnamentKind.values[(flags & 0xff).clamp(0, 2)];
-
       return QvpDressDraw(
         path: path,
         color: color,
-        kind: kind,
+        kind: QvpOrnamentKind.values[(flags & 0xff).clamp(0, 2)],
         evenOdd: evenOdd,
-        stroke: stroke,
+        stroke: flags & 0x200 != 0,
         strokeWidth: strokeWidth,
         part: part,
         placement: placement == qvpNone ? null : placement,
@@ -1253,36 +984,19 @@ class QvpNativeBackend implements QvpBackend {
   // ── Crop ──
 
   @override
-  QvpCropBounds? cropBounds(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks}) {
-    _writeTarget(_target, target, handle);
-    try {
-      if (b.cropBounds(_page(handle), _target, pad, keepAyahMarks ? 1 : 0, _crop) == 0) return null;
-      final c = _crop.ref;
-      return QvpCropBounds(
-        x0: c.x0,
-        y0: c.y0,
-        x1: c.x1,
-        y1: c.y1,
-        nWords: c.nWords,
-        ayahMarkDecoration: c.ayahMarkDecoration,
-      );
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  QvpCropBounds? cropBounds(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks}) =>
+      _withTarget(handle, target, (t) {
+        if (b.cropBounds(_page(handle), t, pad, keepAyahMarks ? 1 : 0, _crop) == 0) return null;
+        final c = _crop.ref;
+        return QvpCropBounds(x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, nWords: c.nWords, ayahMarkDecoration: c.ayahMarkDecoration);
+      });
 
   @override
-  String? cropSvg(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks, int? background}) {
-    _writeTarget(_target, target, handle);
-    try {
-      if (b.cropSvg(_page(handle), _target, pad, keepAyahMarks ? 1 : 0, background ?? 0, _str) == 0) {
-        return null;
-      }
-      return _s();
-    } finally {
-      _freeTarget(_target);
-    }
-  }
+  String? cropSvg(PageHandle handle, QvpTarget target, {required double pad, required bool keepAyahMarks, int? background}) =>
+      _withTarget(handle, target, (t) {
+        if (b.cropSvg(_page(handle), t, pad, keepAyahMarks ? 1 : 0, background ?? 0, _str) == 0) return null;
+        return _s();
+      });
 
   // ── Atlas ──
 
@@ -1321,15 +1035,7 @@ class QvpNativeBackend implements QvpBackend {
     if (b.atlasSurah(_atlas(handle), n, p) == 0) return null;
     final s = p.ref;
     final places = QvpNames.of(QvpNames.place);
-    return QvpAtlasSurah(
-      number: s.number,
-      page: s.firstPage,
-      ayahCount: s.ayahCount,
-      place: s.place < places.length ? places[s.place] : '',
-      arabic: str(s.arabic),
-      latin: str(s.latin),
-      english: str(s.english),
-    );
+    return QvpAtlasSurah(number: s.number, page: s.firstPage, ayahCount: s.ayahCount, place: s.place < places.length ? places[s.place] : '', arabic: str(s.arabic), latin: str(s.latin), english: str(s.english));
   }
 
   @override
@@ -1341,15 +1047,7 @@ class QvpNativeBackend implements QvpBackend {
     return List<QvpAtlasSurah>.generate(n, (i) {
       b.atlasSurah(a, i + 1, p);
       final s = p.ref;
-      return QvpAtlasSurah(
-        number: s.number,
-        page: s.firstPage,
-        ayahCount: s.ayahCount,
-        place: s.place < places.length ? places[s.place] : '',
-        arabic: str(s.arabic),
-        latin: str(s.latin),
-        english: str(s.english),
-      );
+      return QvpAtlasSurah(number: s.number, page: s.firstPage, ayahCount: s.ayahCount, place: s.place < places.length ? places[s.place] : '', arabic: str(s.arabic), latin: str(s.latin), english: str(s.english));
     }, growable: false);
   }
 
@@ -1358,12 +1056,7 @@ class QvpNativeBackend implements QvpBackend {
     final p = _scratch.cast<QvpAtlasRubuAlHizbC>();
     if (b.atlasDivision(_atlas(handle), division, n, p) == 0) return null;
     final d = p.ref;
-    return QvpAtlasRubuAlHizb(
-      rubuAlHizb: d.rubuAlHizb,
-      page: d.page,
-      surah: d.surah,
-      ayah: d.ayah,
-    );
+    return QvpAtlasRubuAlHizb(rubuAlHizb: d.rubuAlHizb, page: d.page, surah: d.surah, ayah: d.ayah);
   }
 
   @override
@@ -1375,18 +1068,15 @@ class QvpNativeBackend implements QvpBackend {
   @override
   List<int>? atlasPagesOfJuz(AtlasHandle handle, int n) {
     final p = _scratch.cast<ffi.Uint16>();
-    final count = b.atlasPagesOfJuz(_atlas(handle), n, p);
-    if (count == 0) return null;
-    return [p[0], p[1]];
+    return b.atlasPagesOfJuz(_atlas(handle), n, p) == 0 ? null : [p[0], p[1]];
   }
 
   @override
   List<int> atlasSearchSurahs(AtlasHandle handle, String text) => _withString(text, (tPtr, len) {
         final p = _scratch.cast<ffi.Uint16>();
-        final cap = _scratchBytes ~/ ffi.sizeOf<ffi.Uint16>();
-        final count = b.atlasSearchSurahs(_atlas(handle), tPtr, len, p, cap);
-        final n = count.clamp(0, cap);
-        return List<int>.from(p.asTypedList(n), growable: false);
+        final cap = _scratchBytes ~/ 2;
+        final n = b.atlasSearchSurahs(_atlas(handle), tPtr, len, p, cap).clamp(0, cap);
+        return Uint16List.fromList(p.asTypedList(n));
       });
 
   @override
@@ -1425,7 +1115,6 @@ class QvpNativeBackend implements QvpBackend {
     final p = b.passageLoadBasmalah(pList, pages.length, surah);
     pffi.malloc.free(pList);
     if (p == ffi.nullptr) throw const FormatException('qvp_passage_load_basmalah failed');
-
     return (NativePassageHandle(p), const [], b.passageLineSpacing(p));
   }
 
@@ -1448,10 +1137,7 @@ class QvpNativeBackend implements QvpBackend {
     final rows = _readArray<QvpPassageRowC, QvpPassageRow>(
       ffi.sizeOf<QvpPassageRowC>(),
       (out, cap) => b.passageRows(p, out, cap),
-      (ptr, i) {
-        final r = ptr[i];
-        return QvpPassageRow(x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, baseline: r.baseline);
-      },
+      (ptr, i) => QvpPassageRow(x0: ptr[i].x0, y0: ptr[i].y0, x1: ptr[i].x1, y1: ptr[i].y1, baseline: ptr[i].baseline),
     );
 
     final words = _readArray<QvpPassageWordC, QvpPassageWord>(
@@ -1459,50 +1145,25 @@ class QvpNativeBackend implements QvpBackend {
       (out, cap) => b.passageWords(p, out, cap),
       (ptr, i) {
         final w = ptr[i];
-        return QvpPassageWord(
-          surah: w.surah,
-          ayah: w.ayah,
-          word: w.word,
-          page: w.page,
-          row: w.row,
-          x0: w.x0,
-          y0: w.y0,
-          x1: w.x1,
-          y1: w.y1,
-          wordX0: w.wordX0,
-          wordY0: w.wordY0,
-          wordX1: w.wordX1,
-          wordY1: w.wordY1,
-        );
+        return QvpPassageWord(surah: w.surah, ayah: w.ayah, word: w.word, page: w.page, row: w.row, x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1, wordX0: w.wordX0, wordY0: w.wordY0, wordX1: w.wordX1, wordY1: w.wordY1);
       },
     );
 
     final ayahs = _readArray<QvpPassageAyahC, QvpPassageAyah>(
       ffi.sizeOf<QvpPassageAyahC>(),
       (out, cap) => b.passageAyahs(p, out, cap),
-      (ptr, i) {
-        final a = ptr[i];
-        return QvpPassageAyah(surah: a.surah, ayah: a.ayah, x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1);
-      },
+      (ptr, i) => QvpPassageAyah(surah: ptr[i].surah, ayah: ptr[i].ayah, x0: ptr[i].x0, y0: ptr[i].y0, x1: ptr[i].x1, y1: ptr[i].y1),
     );
 
     final pDraws = _scratch.cast<ffi.Uint32>();
     final capDraws = _scratchBytes ~/ 4;
     final nDraws = b.passageDrawList(p, pDraws, capDraws);
-    final draws = List<QvpPassageDraw>.generate(
-      nDraws.clamp(0, capDraws ~/ 3),
-      (i) => QvpPassageDraw(pDraws[i * 3], pDraws[i * 3 + 1], pDraws[i * 3 + 2]),
-      growable: false,
-    );
+    final draws = List<QvpPassageDraw>.generate(nDraws.clamp(0, capDraws ~/ 3), (i) => QvpPassageDraw(pDraws[i * 3], pDraws[i * 3 + 1], pDraws[i * 3 + 2]), growable: false);
 
     final pPlaces = _scratch.cast<ffi.Float>();
     final capPlaces = _scratchBytes ~/ 4;
     final nPlaces = b.passagePlacements(p, pPlaces, capPlaces);
-    final places = List<QvpPlacement>.generate(
-      nPlaces.clamp(0, capPlaces ~/ 4),
-      (i) => QvpPlacement(pPlaces[i * 4], pPlaces[i * 4 + 1], pPlaces[i * 4 + 2], pPlaces[i * 4 + 3]),
-      growable: false,
-    );
+    final places = List<QvpPlacement>.generate(nPlaces.clamp(0, capPlaces ~/ 4), (i) => QvpPlacement(pPlaces[i * 4], pPlaces[i * 4 + 1], pPlaces[i * 4 + 2], pPlaces[i * 4 + 3]), growable: false);
 
     return QvpPassageLayout(
       width: l.width,
@@ -1510,9 +1171,7 @@ class QvpNativeBackend implements QvpBackend {
       scale: l.scale,
       lineSpacing: l.lineSpacing,
       isTruncated: l.isTruncated != 0,
-      ellipsis: l.isTruncated != 0
-          ? Rect.fromLTRB(l.ellipsisX0, l.ellipsisY0, l.ellipsisX1, l.ellipsisY1)
-          : null,
+      ellipsis: l.isTruncated != 0 ? Rect.fromLTRB(l.ellipsisX0, l.ellipsisY0, l.ellipsisX1, l.ellipsisY1) : null,
       rows: rows,
       words: words,
       ayahs: ayahs,
@@ -1536,12 +1195,7 @@ class QvpNativeBackend implements QvpBackend {
       final parts = List<QvpOrnamentPart>.generate(o.nParts, (pi) {
         b.ornamentPart(h, i, pi, pPart);
         final pt = pPart.ref;
-        return QvpOrnamentPart(
-          index: pi,
-          name: str(pt.name),
-          color: pt.color,
-          stroke: pt.stroke != 0,
-        );
+        return QvpOrnamentPart(index: pi, name: str(pt.name), color: pt.color, stroke: pt.stroke != 0);
       }, growable: false);
 
       return QvpOrnament(
@@ -1551,12 +1205,7 @@ class QvpNativeBackend implements QvpBackend {
         style: str(o.style),
         riwayah: str(o.riwayah),
         hasSlices: o.hasSlices != 0,
-        licence: QvpOrnamentLicence(
-          id: str(o.licenseId),
-          status: str(o.licenseStatus),
-          redistributable: o.redistributable != 0,
-          attribution: str(o.attribution),
-        ),
+        licence: QvpOrnamentLicence(id: str(o.licenseId), status: str(o.licenseStatus), redistributable: o.redistributable != 0, attribution: str(o.attribution)),
         parts: parts,
       );
     }, growable: false);
@@ -1581,17 +1230,17 @@ class QvpNativeBackend implements QvpBackend {
 
   void _writeTarget(ffi.Pointer<QvpTargetC> p, QvpTarget t, [PageHandle? handle]) {
     final r = p.ref;
-    r.target = t.target;
+    r.target = t.code;
     if (t.wordKey != null && handle != null) {
       final wk = t.wordKey!;
       final w = b.findWord(_page(handle), wk[0], wk[1], wk[2]);
       r.a = w < 0 ? 0 : w;
     } else {
-      r.a = t.a;
+      r.a = t.argA;
     }
-    r.b = t.b;
-    r.c = t.c;
-    if (t.words != null) {
+    r.b = t.argB;
+    r.c = t.argC;
+    if (t.words != null && t.words!.isNotEmpty) {
       final ws = t.words!;
       final ptr = pffi.malloc<ffi.Uint32>(ws.length);
       ptr.asTypedList(ws.length).setAll(0, ws);
@@ -1613,18 +1262,18 @@ class QvpNativeBackend implements QvpBackend {
 
   void _writeSelector(ffi.Pointer<QvpSelectorC> p, QvpSelector s) {
     final r = p.ref;
-    r.selector = s.selector;
-    r.a = s.a;
-    r.b = s.b;
-    r.c = s.c;
+    r.selector = s.code;
+    r.a = s.argA;
+    r.b = s.argB;
+    r.c = s.argC;
   }
 
   void _writeHighlight(ffi.Pointer<QvpHighlightStyleC> p, QvpHighlightStyle s) {
     final r = p.ref;
-    r.mode = s.mode == 'band' ? 1 : (s.mode == 'ink' ? 0 : 2);
-    r.height = s.height == 'ink' ? 1 : 0;
-    r.ink = rgba(s.ink);
-    r.band = rgba(s.band);
+    r.mode = s.modeCode;
+    r.height = s.heightCode;
+    r.ink = s.inkRgba;
+    r.band = s.bandRgba;
     r.padX = s.padX;
     r.padY = s.padY;
     r.radius = s.radius;
@@ -1684,35 +1333,13 @@ class QvpNativeBackend implements QvpBackend {
     r.maxAspectSlack = s.maxAspectSlack;
     r.bannerZoom = s.bannerZoom;
     r.surahFrames = s.surahFrames ? 1 : 0;
-    if (s.reflow != null) {
-      final rf = s.reflow!;
-      r.reflowZoom = rf.zoom;
-      r.reflowFill = switch (rf.fill) {
-        'ragged' => 0,
-        'justified' => 1,
-        'centred' || 'centered' => 2,
-        _ => 255,
-      };
-      r.reflowBreaks = switch (rf.breaks) {
-        'greedy' => 0,
-        'even' => 1,
-        'fitted' => 2,
-        'printed' => 3,
-        _ => 255,
-      };
-      r.reflowGaps = rf.gaps == 'printed' ? 0 : 1;
-      r.reflowWordGap = rf.wordGap;
-      r.reflowMaxStretch = rf.maxStretch;
-      r.reflowRelax = rf.relax;
-    } else {
-      r.reflowZoom = 0;
-      r.reflowFill = 255;
-      r.reflowBreaks = 255;
-      r.reflowGaps = 1;
-      r.reflowWordGap = 1;
-      r.reflowMaxStretch = 0;
-      r.reflowRelax = -1;
-    }
+    r.reflowZoom = s.reflowZoomValue;
+    r.reflowFill = s.reflowFillCode;
+    r.reflowBreaks = s.reflowBreaksCode;
+    r.reflowGaps = s.reflowGapsCode;
+    r.reflowWordGap = s.reflowWordGapValue;
+    r.reflowMaxStretch = s.reflowMaxStretchValue;
+    r.reflowRelax = s.reflowRelaxValue;
   }
 
   void _writeHitOptions(ffi.Pointer<QvpHitOptionsC> p, QvpHitOptions opt) {
@@ -1749,11 +1376,7 @@ class QvpNativeBackend implements QvpBackend {
     r.bandGap = s.bandGap;
     r.ayahMarkScale = s.ayahMarkScale;
     r.pageFrameScale = s.pageFrameScale;
-    r.lineArt = s.lineArt.fold(0, (acc, k) => acc | switch (k) {
-      QvpOrnamentKind.ayahMark => 1,
-      QvpOrnamentKind.surahHeader => 2,
-      QvpOrnamentKind.pageFrame => 4,
-    });
+    r.lineArt = s.lineArtBits;
     r.nColors = s.colors.length.clamp(0, 16);
     if (r.nColors > 0) {
       for (var i = 0; i < r.nColors; i++) {
@@ -1775,7 +1398,7 @@ class QvpNativeBackend implements QvpBackend {
     r.scale = s.scale;
     r.lineSpacing = s.lineSpacing;
     r.padding = s.padding;
-    r.align = s.align.index;
+    r.align = s.alignCode;
     r.maxRows = s.maxRows;
     r.keepAyahMark = s.keepAyahMark ? 1 : 0;
     r.ellipsisWidth = s.ellipsisWidth;
@@ -1793,11 +1416,7 @@ class QvpNativeBackend implements QvpBackend {
 
   QvpView _readView(QvpViewC v) => QvpView(scale: v.scale, offsetX: v.offsetX, offsetY: v.offsetY);
 
-  QvpZoom _readZoom(QvpZoomC z) => QvpZoom(
-        step: z.step,
-        zoom: z.zoom,
-        mode: QvpZoomMode.values[z.mode.clamp(0, 2)],
-      );
+  QvpZoom _readZoom(QvpZoomC z) => QvpZoom(step: z.step, zoom: z.zoom, mode: QvpZoomMode.values[z.mode.clamp(0, 2)]);
 
   QvpLayout _readLayout(QvpLayoutC l) {
     final n = l.nLines;

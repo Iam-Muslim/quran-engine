@@ -135,6 +135,12 @@ abstract final class QvpColor {
 final class QvpSelector {
   const QvpSelector(this.selector, [this.a = 0, this.b = 0, this.c = 0]);
   final int selector, a, b, c;
+
+  int get code => selector;
+  int get argA => a;
+  int get argB => b;
+  int get argC => c;
+
   @override
   String toString() => 'Sel($selector,$a,$b,$c)';
 }
@@ -169,6 +175,12 @@ final class QvpTarget {
   const QvpTarget(this.target, {this.a = 0, this.b = 0, this.c = 0, this.words, this.wordKey});
   final int target, a, b, c;
   final List<int>? words;
+
+  /// Numeric code for the target kind.
+  int get code => target;
+  int get argA => a;
+  int get argB => b;
+  int get argC => c;
 
   /// `[surah, ayah, word]` for the '2:255:3' string form; resolved per page via `findWord`.
   final List<int>? wordKey;
@@ -380,6 +392,23 @@ final class QvpReflowSpec {
   final String fill, breaks, gaps;
   final double wordGap, maxStretch, relax;
 
+  int get fillCode => switch (fill) {
+        'ragged' => 0,
+        'justified' => 1,
+        'centred' || 'centered' => 2,
+        _ => 255,
+      };
+
+  int get breaksCode => switch (breaks) {
+        'greedy' => 0,
+        'even' => 1,
+        'fitted' => 2,
+        'printed' => 3,
+        _ => 255,
+      };
+
+  int get gapsCode => gaps == 'printed' ? 0 : 1;
+
   QvpReflowSpec copyWith({
     double? zoom,
     String? fill,
@@ -534,6 +563,14 @@ final class QvpLayoutSpec {
   /// Draw source-native frames around surah names on the printed page. Reflow stays frameless.
   final bool surahFrames;
 
+  double get reflowZoomValue => reflow?.zoom ?? 0;
+  int get reflowFillCode => reflow?.fillCode ?? 255;
+  int get reflowBreaksCode => reflow?.breaksCode ?? 255;
+  int get reflowGapsCode => reflow?.gapsCode ?? 1;
+  double get reflowWordGapValue => reflow?.wordGap ?? 1;
+  double get reflowMaxStretchValue => reflow?.maxStretch ?? 0;
+  double get reflowRelaxValue => reflow?.relax ?? -1;
+
   QvpLayoutSpec copyWith({
     double? viewportW,
     double? viewportH,
@@ -639,6 +676,16 @@ final class QvpHighlightStyle {
   final Object ink, band;
   final double padX, padY, radius, seam;
   final int ms, layer;
+
+  int get modeCode => switch (mode) {
+        'ink' => 0,
+        'both' => 2,
+        _ => 1,
+      };
+
+  int get heightCode => height == 'ink' ? 1 : 0;
+  int get inkRgba => rgba(ink);
+  int get bandRgba => rgba(band);
 }
 
 /// A theme: every colour is optional (0 / null = leave alone); `marks` maps mark name or id → colour.
@@ -912,6 +959,8 @@ final class QvpDressSpec {
         colors: colors ?? this.colors,
       );
 
+  int get lineArtBits => lineArt.fold(0, (acc, k) => acc | (1 << k.index));
+
   static const Object _keep = Object();
 }
 
@@ -1036,6 +1085,8 @@ final class QvpPassageSpec {
   final bool keepAyahMark;
   final double ellipsisWidth;
   final double maxStretch;
+
+  int get alignCode => align.index;
 
   @override
   bool operator ==(Object other) =>

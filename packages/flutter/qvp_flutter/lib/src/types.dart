@@ -380,6 +380,25 @@ final class QvpReflowSpec {
   final String fill, breaks, gaps;
   final double wordGap, maxStretch, relax;
 
+  QvpReflowSpec copyWith({
+    double? zoom,
+    String? fill,
+    String? breaks,
+    String? gaps,
+    double? wordGap,
+    double? maxStretch,
+    double? relax,
+  }) =>
+      QvpReflowSpec(
+        zoom: zoom ?? this.zoom,
+        fill: fill ?? this.fill,
+        breaks: breaks ?? this.breaks,
+        gaps: gaps ?? this.gaps,
+        wordGap: wordGap ?? this.wordGap,
+        maxStretch: maxStretch ?? this.maxStretch,
+        relax: relax ?? this.relax,
+      );
+
   @override
   bool operator ==(Object other) =>
       other is QvpReflowSpec &&
@@ -1121,6 +1140,31 @@ final class QvpPassageLayout {
   final List<QvpPlacement> placements;
   final bool isTruncated;
   final Rect? ellipsis;
+}
+
+/// Decodes QVP curve opcodes into [path]. Shared by page path caching and dress geometry.
+void decodeQvpPath(Path path, Uint8List ops, int opStart, int opCount, Float32List pts, int ptStart) {
+  var o = opStart;
+  final oe = opStart + opCount;
+  var k = ptStart;
+  for (; o < oe; o++) {
+    switch (ops[o]) {
+      case QvpOp.moveTo:
+        path.moveTo(pts[k], pts[k + 1]);
+        k += 2;
+      case QvpOp.lineTo:
+        path.lineTo(pts[k], pts[k + 1]);
+        k += 2;
+      case QvpOp.quadTo:
+        path.quadraticBezierTo(pts[k], pts[k + 1], pts[k + 2], pts[k + 3]);
+        k += 4;
+      case QvpOp.cubicTo:
+        path.cubicTo(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], pts[k + 4], pts[k + 5]);
+        k += 6;
+      case QvpOp.close:
+        path.close();
+    }
+  }
 }
 
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 
@@ -101,9 +102,29 @@ class QvpPage extends ChangeNotifier {
     notifyListeners();
   }
 
+  List<ui.Path?>? _lazyPaths;
+
+  /// Lazy path access: builds only the path at [i] when requested, matching native Android/iOS.
+  ui.Path path(int i) {
+    final all = _lazyPaths ??= List<ui.Path?>.filled(nPaths, null);
+    final kept = all[i];
+    if (kept != null) return kept;
+
+    final p = ui.Path();
+    p.fillType = pathEvenOdd(i) ? ui.PathFillType.evenOdd : ui.PathFillType.nonZero;
+    final t = table;
+    decodeQvpPath(p, ops, t[i * 8], t[i * 8 + 1], pts, t[i * 8 + 2]);
+    return all[i] = p;
+  }
+
+  /// One [ui.Path] per engine path, in page units, with the fill rule the page records. Built
+  /// from the copied geometry, so it works on a disposed page too.
+  List<ui.Path> buildPaths() => List<ui.Path>.generate(nPaths, path, growable: false);
+
   /// Frees backend page memory. Geometry and info lists stay usable.
   void free() {
     _cachedAyahMarks = null;
+    _lazyPaths = null;
     if (_handle != null) {
       _backend.pageFree(_handle!);
       _handle = null;
@@ -112,6 +133,7 @@ class QvpPage extends ChangeNotifier {
 
   @override
   void dispose() {
+    _lazyPaths = null;
     free();
     super.dispose();
   }
